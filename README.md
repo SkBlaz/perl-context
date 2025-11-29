@@ -1,11 +1,9 @@
-
 ```
- |  __ \        | |       / ____|          | |          | |  
- | |__) |__ _ __| |______| |     ___  _ __ | |_ _____  _| |_ 
+ |  __ \        | |       / ____|          | |          | |
+ | |__) |__ _ __| |______| |     ___  _ __ | |_ _____  _| |_
  |  ___/ _ \ '__| |______| |    / _ \| '_ \| __/ _ \ \/ / __|
- | |  |  __/ |  | |      | |___| (_) | | | | ||  __/>  <| |_ 
+ | |  |  __/ |  | |      | |___| (_) | | | | ||  __/>  <| |_
  |_|   \___|_|  |_|       \_____\___/|_| |_|\__\___/_/\_\\__|
-                                                             
 ```
 
 >>>>>>> 2cf134627f245e38ccb8c62af4590309e5039453
@@ -93,13 +91,13 @@ The generated Markdown is organised into:
    * optional `--- CHUNK N of path/to/file ---` headers
    * a fence like:
 
-     ````text
-     ```python:src/module/foo.py
-     ...file contents...
-     ````
+	 ````text
+	 ```python:src/module/foo.py
+	 ...file contents...
+	 ````
 
-     ```
-     ```
+	 ```
+	 ```
    * closing `=== FILE END: src/module/foo.py ===`
 
 Paste only the parts you need into your LLM (overview + selected files/chunks) and refer to files as `lang:path/to/file` and to specific lines when line numbers are enabled.
