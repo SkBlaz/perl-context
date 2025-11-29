@@ -1,22 +1,76 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
+use utf8;
 use File::Find;
 use File::Spec;
+use File::Path 'remove_tree';
+use File::Temp 'tempdir';
 use Cwd 'abs_path';
-use utf8;
+use Getopt::Long;
 binmode STDOUT, ':encoding(UTF-8)';
 
-# ============================================================
-# CONFIG (env-driven, to avoid argument parsers):
-#   REPO_DUMP_MAX_BYTES     - max size per file (in bytes)
+# ------------------------------------------------------------
+# CLI options
+#   --git_url URL   : clone URL into a temp dir and dump that repo
+#   [path]          : path to repo (default: .) when --git_url is not used
+# ------------------------------------------------------------
+
+my $git_url;
+my $help;
+
+GetOptions(
+    'git_url=s' => \$git_url,
+    'help'      => \$help,
+) or die "Usage: $0 [--git_url URL] [path]\n";
+
+if ($help) {
+    print "Usage:\n";
+    print "  $0 [--git_url URL] [path]\n\n";
+    print "Examples:\n";
+    print "  $0 .\n";
+    print "  $0 /path/to/repo\n";
+    print "  $0 --git_url https://github.com/SkBlaz/py3plex.git\n";
+    exit 0;
+}
+
+my $tmp_root;
+my $root;
+
+if ($git_url) {
+    # clone into a temp dir
+    $tmp_root = tempdir("pcontext-XXXXXX", CLEANUP => 0);
+    my $target = "$tmp_root/repo";
+
+    print "# Cloning $git_url into $target\n";
+    my $rc = system('git', 'clone', '--depth', '1', $git_url, $target);
+    if ($rc != 0) {
+        die "git clone failed with exit code " . ($rc >> 8) . "\n";
+    }
+
+    $root = abs_path($target);
+} else {
+    my $path = shift @ARGV // '.';
+    $root = abs_path($path);
+}
+
+# ensure temp clone is removed when script exits
+END {
+    if (defined $tmp_root && -d $tmp_root) {
+        remove_tree($tmp_root, { error => \my $err });
+        # ignore errors; this is best-effort cleanup
+    }
+}
+
+# ------------------------------------------------------------
+# Config via environment variables
+#   REPO_DUMP_MAX_BYTES     - max size per file (bytes)
 #   REPO_DUMP_MAX_LINES     - max lines per chunk (0 = no chunking)
 #   REPO_DUMP_LINE_NUMBERS  - if set, prefix lines with "NNNN| "
-#   REPO_DUMP_ONLY_EXT      - comma-separated list of extensions to keep (e.g. "py,ts,tsx")
+#   REPO_DUMP_ONLY_EXT      - comma-separated extensions to include (e.g. "py,ts,tsx")
 #   REPO_DUMP_EXCLUDE       - extra ignore patterns, comma-separated (glob-ish)
-# ============================================================
+# ------------------------------------------------------------
 
-my $root       = abs_path(shift || '.');
 my $MAX_BYTES  = $ENV{REPO_DUMP_MAX_BYTES}    || 300_000;
 my $MAX_LINES  = defined $ENV{REPO_DUMP_MAX_LINES}
                  ? $ENV{REPO_DUMP_MAX_LINES}
@@ -31,38 +85,28 @@ if (length $ONLY_EXTS) {
                 grep { length } split /\s*,\s*/, $ONLY_EXTS;
 }
 
-# ============================================================
-# Language mapping & helpers
-# ============================================================
+# ------------------------------------------------------------
+# Language mapping
+# ------------------------------------------------------------
 
-# Map file extensions to Markdown fence language keys
 my %ext_to_lang = (
     pl   => 'perl',    pm    => 'perl',
     py   => 'python',
     rb   => 'ruby',
-    js   => 'javascript',
-    mjs  => 'javascript',
-    cjs  => 'javascript',
-    ts   => 'typescript',
-    tsx  => 'tsx',
-    jsx  => 'jsx',
+    js   => 'javascript', mjs  => 'javascript', cjs => 'javascript',
+    ts   => 'typescript', tsx  => 'tsx', jsx    => 'jsx',
     java => 'java',
-    c    => 'c',
-    h    => 'c',
-    cpp  => 'cpp',     cc    => 'cpp',   cxx => 'cpp',
-    hh   => 'cpp',     hpp   => 'cpp',
+    c    => 'c', h => 'c',
+    cpp  => 'cpp', cc => 'cpp', cxx => 'cpp', hh => 'cpp', hpp => 'cpp',
     go   => 'go',
     rs   => 'rust',
     php  => 'php',
     cs   => 'csharp',
-    sh   => 'bash',
-    zsh  => 'zsh',
-    md   => 'markdown',
-    markdown => 'markdown',
+    sh   => 'bash', zsh => 'zsh',
+    md   => 'markdown', markdown => 'markdown',
     json => 'json',
-    yml  => 'yaml',    yaml  => 'yaml',
-    html => 'html',
-    htm  => 'html',
+    yml  => 'yaml', yaml => 'yaml',
+    html => 'html', htm  => 'html',
     css  => 'css',
     sql  => 'sql',
     kt   => 'kotlin',
@@ -72,7 +116,6 @@ my %ext_to_lang = (
     toml => 'toml',
 );
 
-# Human-friendly language names
 my %lang_name = (
     perl        => 'Perl',
     python      => 'Python',
@@ -110,9 +153,9 @@ sub lang_display_name {
     return $lang_name{$k} || ucfirst($k);
 }
 
-# ============================================================
-# Ignore patterns (.gitignore + extra)
-# ============================================================
+# ------------------------------------------------------------
+# .gitignore + extra excludes
+# ------------------------------------------------------------
 
 sub glob_to_regex {
     my ($pat) = @_;
@@ -123,13 +166,12 @@ sub glob_to_regex {
     my $re = quotemeta($pat);
     $re =~ s/\\\*/.*/g;
     $re =~ s/\\\?/./g;
-
     return qr/^$re$/;
 }
 
 my @ignore_re;
-
 my $gitignore = "$root/.gitignore";
+
 if (-f $gitignore && open my $gi, '<', $gitignore) {
     while (my $pat = <$gi>) {
         chomp $pat;
@@ -154,9 +196,9 @@ sub ignored {
     return 0;
 }
 
-# ============================================================
+# ------------------------------------------------------------
 # Role & hint classification
-# ============================================================
+# ------------------------------------------------------------
 
 sub file_role_and_flags {
     my ($rel, $ext, $lang_key) = @_;
@@ -165,24 +207,20 @@ sub file_role_and_flags {
     my $is_config = 0;
     my $is_entry  = 0;
 
-    # ---- entrypoint-ish detection by language ----
+    # Entrypoints by language
     if ($lang_key && $lang_key eq 'python') {
         $is_entry = 1 if $lc =~ m{(^|/)(main|app|wsgi|asgi|manage)\.py$};
-    }
-    elsif ($lang_key && ($lang_key eq 'javascript' || $lang_key eq 'typescript' || $lang_key eq 'tsx' || $lang_key eq 'jsx')) {
+    } elsif ($lang_key && ($lang_key eq 'javascript' || $lang_key eq 'typescript' || $lang_key eq 'tsx' || $lang_key eq 'jsx')) {
         $is_entry = 1 if $lc =~ m{(^|/)(src/)?(index|main|app|server|cli)\.(js|jsx|ts|tsx)$};
-    }
-    elsif ($lang_key && $lang_key eq 'go') {
+    } elsif ($lang_key && $lang_key eq 'go') {
         $is_entry = 1 if $lc =~ m{(^|/)cmd/[^/]+/main\.go$} || $lc =~ m{(^|/)main\.go$};
-    }
-    elsif ($lang_key && $lang_key eq 'rust') {
+    } elsif ($lang_key && $lang_key eq 'rust') {
         $is_entry = 1 if $lc =~ m{(^|/)src/main\.rs$} || $lc =~ m{(^|/)src/bin/[^/]+\.rs$};
-    }
-    elsif ($lang_key && $lang_key eq 'java') {
+    } elsif ($lang_key && $lang_key eq 'java') {
         $is_entry = 1 if $lc =~ m{(^|/)src/main/java/.+/(Main|Application)\.java$};
     }
 
-    # ---- tests ----
+    # Tests
     if ($lc =~ m{(^|/)(test|tests|spec|__tests__)/}
         || $lc =~ m{(^|/)test_}
         || $lc =~ m{_test\.[a-z0-9_]+$}
@@ -191,38 +229,31 @@ sub file_role_and_flags {
         $category = 'test';
     }
 
-    # ---- config / manifest ----
-    if ($lc =~ m{(^|/)(package\.json
-                     |tsconfig\.json
-                     |webpack\.config\.[a-z0-9_]+
-                     |vite\.config\.[a-z0-9_]+
-                     |rollup\.config\.[a-z0-9_]+
-                     |babel\.config\.[a-z0-9_]+
-                     |jest\.config\.[a-z0-9_]+
-                     |pyproject\.toml
-                     |setup\.py
-                     |requirements\.txt
-                     |pipfile
-                     |pipfile\.lock
-                     |tox\.ini
-                     |setup\.cfg
-                     |cargo\.toml
-                     |cargo\.lock
-                     |go\.mod
-                     |go\.sum
-                     |makefile
-                     |cmakelists\.txt
-                     |pom\.xml
-                     |build\.gradle
-                     |settings\.gradle
-                     |composer\.json
-                     |gemfile
-                     |rakefile)$}x) {
-        $category = 'config' unless defined $category;
-        $is_config = 1;
+    # Config / manifest
+    my @config_names = qw(
+        package.json tsconfig.json webpack.config.js webpack.config.ts
+        vite.config.js vite.config.ts rollup.config.js rollup.config.ts
+        babel.config.js babel.config.cjs babel.config.mjs
+        jest.config.js jest.config.ts
+        pyproject.toml setup.py requirements.txt Pipfile Pipfile.lock
+        tox.ini setup.cfg
+        Cargo.toml Cargo.lock
+        go.mod go.sum
+        Makefile CMakeLists.txt
+        pom.xml build.gradle settings.gradle
+        composer.json Gemfile Rakefile
+    );
+
+    for my $cfg (@config_names) {
+        my $pat = lc $cfg;
+        if (index($lc, "/$pat") >= 0 || substr($lc, -length($pat)) eq $pat) {
+            $category = 'config' unless defined $category;
+            $is_config = 1;
+            last;
+        }
     }
 
-    # ---- docs ----
+    # Docs
     if (!defined $category && $lc =~ m{(^|/)(docs?|doc/)} && $ext =~ /^(md|rst|txt)$/i) {
         $category = 'docs';
     }
@@ -230,7 +261,7 @@ sub file_role_and_flags {
         $category = 'docs';
     }
 
-    # ---- fallback ----
+    # Fallback
     if (!defined $category) {
         if (defined $lang_key && $lang_key ne '' && $ext !~ /^(md|txt|rst)$/i) {
             $category = 'source';
@@ -254,7 +285,7 @@ sub role_hint {
         } elsif ($lang_key && ($lang_key eq 'javascript' || $lang_key eq 'typescript' || $lang_key eq 'tsx' || $lang_key eq 'jsx')) {
             push @bits, 'JS/TS tests (Jest/Vitest/Mocha style naming)';
         } elsif ($lang_key && $lang_key eq 'go') {
-            push @bits, 'Go tests (`*_test.go`)';
+            push @bits, 'Go tests (*_test.go)';
         } elsif ($lang_key && $lang_key eq 'rust') {
             push @bits, 'Rust tests (unit/integration style)';
         } else {
@@ -267,75 +298,63 @@ sub role_hint {
     }
 
     if ($category eq 'config' && $is_config) {
-        if ($rel =~ /package\.json$/i) {
-            push @bits, 'Node.js package manifest (dependencies + scripts)';
-        } elsif ($rel =~ /pyproject\.toml$/i) {
-            push @bits, 'Python project configuration (PEP 621 / tooling)';
-        } elsif ($rel =~ /requirements\.txt$/i) {
-            push @bits, 'Python dependencies list';
-        } elsif ($rel =~ /cargo\.toml$/i) {
-            push @bits, 'Rust crate manifest';
-        } elsif ($rel =~ /go\.mod$/i) {
-            push @bits, 'Go module definition';
-        } elsif ($rel =~ /pom\.xml$/i) {
-            push @bits, 'Maven build configuration';
-        }
+        if    ($rel =~ /package\.json$/i)    { push @bits, 'Node.js package manifest (dependencies + scripts)'; }
+        elsif ($rel =~ /pyproject\.toml$/i)  { push @bits, 'Python project configuration (PEP 621 / tooling)'; }
+        elsif ($rel =~ /requirements\.txt$/i){ push @bits, 'Python dependencies list'; }
+        elsif ($rel =~ /Cargo\.toml$/i)      { push @bits, 'Rust crate manifest'; }
+        elsif ($rel =~ /go\.mod$/i)          { push @bits, 'Go module definition'; }
+        elsif ($rel =~ /pom\.xml$/i)         { push @bits, 'Maven build configuration'; }
     }
 
     return @bits ? join(', ', @bits) : '';
 }
 
-# ============================================================
-# Walk the repo
-# ============================================================
+# ------------------------------------------------------------
+# Walk repo
+# ------------------------------------------------------------
 
 my @paths;
 my @files;
 my %is_dir;
 
-find(
-    {
-        no_chdir => 1,
-        wanted   => sub {
-            my $path = $File::Find::name;
-            return if $path eq $root;
+find({
+    no_chdir => 1,
+    wanted   => sub {
+        my $path = $File::Find::name;
+        return if $path eq $root;
 
-            # Prune very noisy dirs early
-            if (-d _) {
-                my ($name) = $path =~ m{([^/]+)$};
-                if ($name =~ /^\.(git|svn|hg)$/
-                    || $name =~ /^(node_modules|dist|build|target|venv|__pycache__)$/) {
-                    $File::Find::prune = 1;
-                    return;
-                }
+        if (-d _) {
+            my ($name) = $path =~ m{([^/]+)$};
+            if ($name =~ /^\.(git|svn|hg)$/
+                || $name =~ /^(node_modules|dist|build|target|venv|__pycache__)$/) {
+                $File::Find::prune = 1;
+                return;
             }
+        }
 
-            my $rel = File::Spec->abs2rel($path, $root);
-            return if ignored($rel);
+        my $rel = File::Spec->abs2rel($path, $root);
+        return if ignored($rel);
 
-            push @paths, $rel;
-
-            if (-d _) {
-                $is_dir{$rel} = 1;
-            } elsif (-f _) {
-                if (%only_ext) {
-                    my ($ext) = $rel =~ /\.([A-Za-z0-9_]+)$/;
-                    my $lex = lc($ext // '');
-                    return if !$lex || !$only_ext{$lex};
-                }
-                push @files, $rel;
+        push @paths, $rel;
+        if (-d _) {
+            $is_dir{$rel} = 1;
+        } elsif (-f _) {
+            if (%only_ext) {
+                my ($ext) = $rel =~ /\.([A-Za-z0-9_]+)$/;
+                my $lex = lc($ext // '');
+                return if !$lex || !$only_ext{$lex};
             }
-        },
+            push @files, $rel;
+        }
     },
-    $root
-);
+}, $root);
 
 @paths = sort @paths;
 @files = sort @files;
 
-# ============================================================
-# Collect stats and per-file metadata
-# ============================================================
+# ------------------------------------------------------------
+# Stats and metadata
+# ------------------------------------------------------------
 
 my %file_info;
 my %lang_stats;
@@ -396,21 +415,18 @@ for my $rel (@files) {
 my $file_count    = scalar @files;
 my $approx_tokens = int(($total_bytes || 0) / 4) || 0;
 
-# Heuristic key files (docs + important configs / entrypoints)
 my @key_files;
 for my $rel (@files) {
-    my $fi = $file_info{$rel};
-    next unless $fi;
+    my $fi = $file_info{$rel} or next;
     my $cat = $fi->{category};
-
     if ($cat eq 'docs' || $fi->{is_entry} || $fi->{is_config}) {
         push @key_files, $rel;
     }
 }
 
-# ============================================================
-# PRINT: REPO OVERVIEW
-# ============================================================
+# ------------------------------------------------------------
+# REPO OVERVIEW
+# ------------------------------------------------------------
 
 print "### REPO OVERVIEW\n\n";
 print "Root: $root\n";
@@ -439,9 +455,9 @@ if (%ext_count) {
     print "\n";
 }
 
-# ============================================================
-# PRINT: LANGUAGE OVERVIEW
-# ============================================================
+# ------------------------------------------------------------
+# LANGUAGE OVERVIEW
+# ------------------------------------------------------------
 
 print "### LANGUAGE OVERVIEW\n\n";
 
@@ -484,9 +500,9 @@ for my $lang_id (
     print "\n";
 }
 
-# ============================================================
-# PRINT: REPO TREE
-# ============================================================
+# ------------------------------------------------------------
+# REPO TREE
+# ------------------------------------------------------------
 
 print "### REPO TREE\n\n";
 for my $p (@paths) {
@@ -501,14 +517,14 @@ print "\n### FILE CONTENTS\n";
 print "# Each file is wrapped in markers and code fences for LLM consumption.\n";
 print "# Fences use the form ```lang:path/to/file for easy mapping.\n\n";
 
-# ============================================================
-# PRINT: FILE CONTENTS (language-aware, chunked)
-# ============================================================
+# ------------------------------------------------------------
+# FILE CONTENTS
+# ------------------------------------------------------------
 
 my $use_chunks = $MAX_LINES && $MAX_LINES > 0;
 
 for my $rel (@files) {
-    my $fi = $file_info{$rel} || next;
+    my $fi = $file_info{$rel} or next;
     my $full      = $fi->{full};
     my $size      = $fi->{size};
     my $is_text   = $fi->{is_text};
@@ -517,18 +533,18 @@ for my $rel (@files) {
     my $category  = $fi->{category};
 
     my $role_text = $category eq 'source' ? 'source code'
-                   : $category eq 'test'  ? 'tests'
-                   : $category eq 'config'? 'configuration / manifest'
-                   : $category eq 'docs'  ? 'documentation'
-                   :                       'other';
+                   : $category eq 'test'   ? 'tests'
+                   : $category eq 'config' ? 'configuration / manifest'
+                   : $category eq 'docs'   ? 'documentation'
+                   :                         'other';
 
     my $hint = role_hint($category, $fi->{lang_key}, $rel, $fi->{is_config}, $fi->{is_entry});
 
     print "\n=== FILE START: $rel ===\n";
-    print "Size: $size bytes | Text: " . ($is_text ? "yes" : "no") . "\n";
+    print "Size: $size bytes | Text: " . ($is_text ? 'yes' : 'no') . "\n";
     print "Language: $lang_name ($lang_id) | Role: $role_text\n";
     print "Hints: $hint\n" if $hint;
-    print "Chunks: " . ($use_chunks ? "up to $MAX_LINES lines per chunk" : "single chunk") . "\n";
+    print "Chunks: " . ($use_chunks ? "up to $MAX_LINES lines per chunk" : 'single chunk') . "\n";
 
     if (!$is_text) {
         print "[[ BINARY OR NON-TEXT FILE – CONTENT OMITTED ]]\n";
@@ -542,7 +558,8 @@ for my $rel (@files) {
         next;
     }
 
-    unless (open my $fh, '<', $full) {
+    my $fh;
+    unless (open $fh, '<', $full) {
         print "[[ ERROR: cannot open file ]]\n";
         print "=== FILE END: $rel ===\n";
         next;
@@ -553,7 +570,7 @@ for my $rel (@files) {
     my $line_in_file  = 0;
 
     my $fence_lang = $lang_id;
-    $fence_lang =~ s/\s+/_/g;  # just in case
+    $fence_lang =~ s/\s+/_/g;
 
     my $info = $fence_lang ? "$fence_lang:$rel" : $rel;
 
