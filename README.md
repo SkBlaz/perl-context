@@ -6,7 +6,6 @@
  |_|   \___|_|  |_|       \_____\___/|_| |_|\__\___/_/\_\\__|
 ```
 
->>>>>>> 2cf134627f245e38ccb8c62af4590309e5039453
 # pcontext – Repo → LLM Markdown Dumper
 
 `pcontext.pl` turns a source-code repository into a single, LLM-friendly Markdown dump with:
