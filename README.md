@@ -1,3 +1,10 @@
+_                       _            _ 
+ _ __   ___ _ __| |       ___ ___  _ __ | |_ _____  _| |_
+| '_  / _ \| '__| |_____ / __/ _ \| ' | | __/ _ \  \/ / __|
+| |_) |  __/ |  | |_____| (_| (_) | | | | ||  __/>  <| |_
+| .__/  ___|_|  |_|      \___\___/|_| |_| \___/ _/ _|
+|_|
+
 # pcontext – Repo → LLM Markdown Dumper
 
 `pcontext.pl` turns a source-code repository into a single, LLM-friendly Markdown dump with:
@@ -10,7 +17,7 @@
 
 ## Quick start (clone via `--git_url`)
 
-You don’t need the repo locally – `pcontext.pl` can clone it, dump it, and clean up after itself:
+You 'don't need the repo locally – `pcontext.pl` can clone it, dump it, and clean up after itself:
 
 ```bash
 perl pcontext.pl --git_url https://github.com/psf/requests.git > requests_context.md
