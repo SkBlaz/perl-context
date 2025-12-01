@@ -20,4 +20,6 @@ jobs:
         perl-version: '5.34'
     
     - name: Run e2e test
-      run: ./example_e2e.sh
+      run: |
+        chmod +x example_e2e.sh
+        ./example_e2e.sh
