@@ -40,9 +40,9 @@ END {
 }
 
 sub process_command_line_args {
-    my $git_url;
-    my $help;
-    my $compress;
+    my $git_url  = undef;
+    my $help     = 0;
+    my $compress = 0;
 
     GetOptions(
         'git_url=s' => \$git_url,
@@ -75,6 +75,7 @@ sub process_command_line_args {
         $path = abs_path($path);
     }
 
+    # Returns (path, compress_flag)
     return ( $path, $compress );
 }
 
@@ -665,6 +666,28 @@ sub generate_repo_tree {
 # FILE CONTENTS
 # ------------------------------------------------------------
 
+sub category_to_role_text {
+    my ( $category, $verbose ) = @_;
+    $verbose ||= 0;
+
+    if ($verbose) {
+        return
+            $category eq 'source' ? 'source code'
+          : $category eq 'test'   ? 'tests'
+          : $category eq 'config' ? 'configuration / manifest'
+          : $category eq 'docs'   ? 'documentation'
+          :                         'other';
+    }
+    else {
+        return
+            $category eq 'source' ? 'source'
+          : $category eq 'test'   ? 'test'
+          : $category eq 'config' ? 'config'
+          : $category eq 'docs'   ? 'docs'
+          :                         'other';
+    }
+}
+
 sub dump_file_contents {
     my ( $files_ref, $file_info_ref, $config ) = @_;
 
@@ -681,13 +704,7 @@ sub dump_file_contents {
             my $lang_name             = $current_file_info_ref->{lang_name};
             my $category              = $current_file_info_ref->{category};
 
-            my $role_text =
-                $category eq 'source' ? 'source'
-              : $category eq 'test'   ? 'test'
-              : $category eq 'config' ? 'config'
-              : $category eq 'docs'   ? 'docs'
-              :                         'other';
-
+            my $role_text      = category_to_role_text( $category, 0 );
             my $text_indicator = $is_text ? 'text' : 'binary';
             print
               "- $rel [$lang_name, $role_text, $size bytes, $text_indicator]\n";
@@ -711,12 +728,7 @@ sub dump_file_contents {
         my $lang_name             = $current_file_info_ref->{lang_name};
         my $category              = $current_file_info_ref->{category};
 
-        my $role_text =
-            $category eq 'source' ? 'source code'
-          : $category eq 'test'   ? 'tests'
-          : $category eq 'config' ? 'configuration / manifest'
-          : $category eq 'docs'   ? 'documentation'
-          :                         'other';
+        my $role_text = category_to_role_text( $category, 1 );
 
         my $hint = role_hint(
             $category, $current_file_info_ref->{lang_key},
