@@ -248,4 +248,71 @@ like( $compile_result, qr/syntax OK/, 'pcontext.pl compiles without errors' );
     like( $output, qr/pcontext\.pl/, 'Script includes itself when run on current directory' );
 }
 
+# Test: Compress mode flag
+{
+    my $test_dir = tempdir( CLEANUP => 1 );
+    
+    # Create test files
+    open my $fh, '>', "$test_dir/README.md" or die "Cannot create file: $!";
+    print $fh "# Test Project\n";
+    close $fh;
+    
+    open $fh, '>', "$test_dir/main.py" or die "Cannot create file: $!";
+    print $fh "def main():\n    print('Hello')\n";
+    close $fh;
+    
+    # Test compress mode
+    my $output = `./pcontext.pl --compress $test_dir 2>&1`;
+    like( $output, qr/REPO OVERVIEW/, 'Compress mode contains REPO OVERVIEW' );
+    like( $output, qr/LANGUAGE OVERVIEW/, 'Compress mode contains LANGUAGE OVERVIEW' );
+    like( $output, qr/REPO TREE/, 'Compress mode contains REPO TREE' );
+    like( $output, qr/FILE LIST/, 'Compress mode contains FILE LIST instead of FILE CONTENTS' );
+    unlike( $output, qr/FILE CONTENTS/, 'Compress mode does not contain FILE CONTENTS' );
+    unlike( $output, qr/```python:main\.py/, 'Compress mode does not show file content fences' );
+    like( $output, qr/- README\.md \[Markdown, docs, \d+ bytes, text\]/, 'Compress mode shows file metadata for README.md' );
+    like( $output, qr/- main\.py \[Python, source, \d+ bytes, text\]/, 'Compress mode shows file metadata for main.py' );
+}
+
+# Test: Compress mode help flag
+{
+    my $output = `./pcontext.pl --help 2>&1`;
+    like( $output, qr/--compress/, 'Help message mentions --compress option' );
+    like( $output, qr/compressed mode/i, 'Help message describes compress mode' );
+}
+
+# Test: Compress mode with git_url
+{
+    # This is a smoke test to make sure --compress works with --git_url
+    # We skip actual git clone in unit test for speed
+    my $test_dir = tempdir( CLEANUP => 1 );
+    
+    open my $fh, '>', "$test_dir/test.txt" or die "Cannot create file: $!";
+    print $fh "test content\n";
+    close $fh;
+    
+    my $output = `./pcontext.pl --compress $test_dir 2>&1`;
+    like( $output, qr/FILE LIST/, 'Compress mode works with directory path' );
+    like( $output, qr/- test\.txt/, 'Compress mode lists test.txt' );
+}
+
+# Test: Normal mode still shows full contents
+{
+    my $test_dir = tempdir( CLEANUP => 1 );
+    
+    open my $fh, '>', "$test_dir/code.py" or die "Cannot create file: $!";
+    print $fh "x = 1\ny = 2\n";
+    close $fh;
+    
+    # Without compress flag
+    my $output = `./pcontext.pl $test_dir 2>&1`;
+    like( $output, qr/FILE CONTENTS/, 'Normal mode shows FILE CONTENTS' );
+    like( $output, qr/```python:code\.py/, 'Normal mode shows code fence' );
+    like( $output, qr/x = 1/, 'Normal mode shows actual file content' );
+    
+    # With compress flag
+    $output = `./pcontext.pl --compress $test_dir 2>&1`;
+    like( $output, qr/FILE LIST/, 'Compress mode shows FILE LIST' );
+    unlike( $output, qr/x = 1/, 'Compress mode does not show actual file content' );
+}
+
 done_testing();

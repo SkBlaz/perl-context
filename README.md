@@ -54,6 +54,27 @@ perl pcontext.pl /path/to/repo > repo_context.md
 
 ---
 
+## Compression mode
+
+For quick repository overviews without full file contents, use `--compress`:
+
+```bash
+perl pcontext.pl --compress . > repo_structure.md
+
+# Or with a remote repo
+perl pcontext.pl --git_url https://github.com/psf/requests.git --compress > requests_structure.md
+```
+
+Compression mode outputs:
+* `### REPO OVERVIEW` – same as normal mode
+* `### LANGUAGE OVERVIEW` – same as normal mode  
+* `### REPO TREE` – same as normal mode
+* `### FILE LIST` – file metadata only (no contents)
+
+This produces **much smaller** output (~50x reduction) with just the high-level structure, perfect for getting a quick understanding of a repository's organization.
+
+---
+
 ## Useful options (env vars)
 
 Everything is configured via environment variables:

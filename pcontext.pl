@@ -42,29 +42,40 @@ END {
 sub process_command_line_args {
     my $git_url;
     my $help;
+    my $compress;
 
     GetOptions(
         'git_url=s' => \$git_url,
         'help'      => \$help,
-    ) or die "Usage: $0 [--git_url URL] [path]\n";
+        'compress'  => \$compress,
+    ) or die "Usage: $0 [--git_url URL] [--compress] [path]\n";
 
     if ($help) {
         print "Usage:\n";
-        print "  $0 [--git_url URL] [path]\n\n";
+        print "  $0 [--git_url URL] [--compress] [path]\n\n";
+        print "Options:\n";
+        print "  --git_url URL   Clone a Git repository from URL\n";
+        print
+"  --compress      Output compressed mode (structure only, no file contents)\n";
+        print "  --help          Show this help message\n\n";
         print "Examples:\n";
         print "  $0 .\n";
         print "  $0 /path/to/repo\n";
         print "  $0 --git_url https://github.com/SkBlaz/py3plex.git\n";
+        print "  $0 --compress .\n";
         exit 0;
     }
 
+    my $path;
     if ($git_url) {
-        return clone_git_repo($git_url);
+        $path = clone_git_repo($git_url);
     }
     else {
-        my $path = shift @ARGV // '.';
-        return abs_path($path);
+        $path = shift @ARGV // '.';
+        $path = abs_path($path);
     }
+
+    return ( $path, $compress );
 }
 
 # ------------------------------------------------------------
@@ -370,6 +381,7 @@ sub role_hint {
 # ------------------------------------------------------------
 
 sub get_config {
+    my ($compress) = @_;
     my $MAX_BYTES = $ENV{REPO_DUMP_MAX_BYTES} || 300_000;
     my $MAX_LINES =
       defined $ENV{REPO_DUMP_MAX_LINES}
@@ -391,6 +403,7 @@ sub get_config {
         line_nums   => $LINE_NUMS,
         only_ext    => \%only_ext,
         exclude_pat => $EXCLUDE_PAT,
+        compress    => $compress || 0,
     };
 }
 
@@ -655,6 +668,33 @@ sub generate_repo_tree {
 sub dump_file_contents {
     my ( $files_ref, $file_info_ref, $config ) = @_;
 
+    if ( $config->{compress} ) {
+        print "\n### FILE LIST\n";
+        print "# Compressed mode: showing file metadata only (no contents).\n";
+        print
+"# Use without --compress to see full file contents in code fences.\n\n";
+
+        for my $rel (@$files_ref) {
+            my $current_file_info_ref = $file_info_ref->{$rel} or next;
+            my $size                  = $current_file_info_ref->{size};
+            my $is_text               = $current_file_info_ref->{is_text};
+            my $lang_name             = $current_file_info_ref->{lang_name};
+            my $category              = $current_file_info_ref->{category};
+
+            my $role_text =
+                $category eq 'source' ? 'source'
+              : $category eq 'test'   ? 'test'
+              : $category eq 'config' ? 'config'
+              : $category eq 'docs'   ? 'docs'
+              :                         'other';
+
+            my $text_indicator = $is_text ? 'text' : 'binary';
+            print
+              "- $rel [$lang_name, $role_text, $size bytes, $text_indicator]\n";
+        }
+        return;
+    }
+
     print "\n### FILE CONTENTS\n";
     print
 "# Each file is wrapped in markers and code fences for LLM consumption.\n";
@@ -762,14 +802,14 @@ sub dump_file_contents {
 # ------------------------------------------------------------
 
 sub main {
-    my $root = process_command_line_args();
+    my ( $root, $compress ) = process_command_line_args();
 
     die "Error: Root path '$root' not found or is not a directory.\n"
       unless -d $root;
 
     print "# Starting analysis of $root\n";
 
-    my $config = get_config();
+    my $config = get_config($compress);
 
     my @ignore_re = build_ignore_list( $root, $config->{exclude_pat} );
 
