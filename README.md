@@ -8,6 +8,8 @@
 
 # pcontext – Repo → LLM Markdown Dumper
 
+[![CI](https://github.com/SkBlaz/perl-context/actions/workflows/ci.yml/badge.svg)](https://github.com/SkBlaz/perl-context/actions/workflows/ci.yml)
+
 `pcontext.pl` turns a source-code repository into a single, LLM-friendly Markdown dump with:
 
 * a repo + language overview
