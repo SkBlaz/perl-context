@@ -21,7 +21,42 @@ jobs:
       with:
         perl-version: '5.34'
     
+    - name: Check Perl syntax
+      run: perl -c pcontext.pl
+    
+    - name: Run unit and integration tests
+      run: perl pcontext.t
+    
     - name: Run e2e test
       run: |
         chmod +x example_e2e.sh
         ./example_e2e.sh
+
+  format-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Perl
+      uses: shogo82148/actions-setup-perl@v1
+      with:
+        perl-version: '5.34'
+    
+    - name: Install perltidy
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y perltidy
+    
+    - name: Check formatting
+      run: |
+        perltidy -b pcontext.pl
+        if ! diff -q pcontext.pl pcontext.pl.bak > /dev/null 2>&1; then
+          echo "Error: pcontext.pl is not formatted with perltidy"
+          echo "Run: perltidy -b pcontext.pl"
+          diff pcontext.pl pcontext.pl.bak || true
+          exit 1
+        fi
+        echo "pcontext.pl is properly formatted"
