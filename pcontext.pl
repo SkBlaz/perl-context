@@ -63,9 +63,7 @@ sub main {
     print_help() if $help;
 
     # Build parameters for analyze_repository
-    my %params = (
-        compress => $compress,
-    );
+    my %params = ( compress => $compress, );
 
     if ($git_url) {
         $params{git_url} = $git_url;
@@ -88,18 +86,20 @@ sub main {
         $params{include_line_numbers} = 1;
     }
     if ( $ENV{REPO_DUMP_ONLY_EXT} ) {
-        $params{include_extensions} = [ split /\s*,\s*/, $ENV{REPO_DUMP_ONLY_EXT} ];
+        $params{include_extensions} =
+          [ split /\s*,\s*/, $ENV{REPO_DUMP_ONLY_EXT} ];
     }
     if ( $ENV{REPO_DUMP_EXCLUDE} ) {
-        $params{exclude_patterns} = [ split /\s*,\s*/, $ENV{REPO_DUMP_EXCLUDE} ];
+        $params{exclude_patterns} =
+          [ split /\s*,\s*/, $ENV{REPO_DUMP_EXCLUDE} ];
     }
 
     # Run analysis
     my $result = analyze_repository( \%params );
 
     if ( !$result->{success} ) {
-        my $error = $result->{error} || {};
-        my $msg = $error->{message} || 'Unknown error';
+        my $error = $result->{error}  || {};
+        my $msg   = $error->{message} || 'Unknown error';
         die "Error: $msg\n";
     }
 
