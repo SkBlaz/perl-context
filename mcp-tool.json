@@ -1,0 +1,163 @@
+{
+  "schema_version": "1.0.0",
+  "name": "dump_repo_context",
+  "version": "1.0.0",
+  "description": "Dumps a source code repository into a comprehensive, LLM-friendly format. Analyzes directory structure, identifies key files (entrypoints, configs, docs), detects programming languages, and extracts file contents with metadata. Use this tool when you need to understand a codebase, analyze repository structure, or prepare code context for processing.",
+  "author": "pcontext",
+  "license": "MIT",
+  "runtime": {
+    "interpreter": "perl",
+    "command": ["./pcontext-mcp"],
+    "timeout_ms": 300000
+  },
+  "tool": {
+    "name": "dump_repo_context",
+    "description": "Analyzes and dumps repository content into structured LLM-friendly format. Supports local directories and remote Git repositories. Returns comprehensive metadata including file tree, language statistics, key file identification, and optionally full file contents.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path to local directory to analyze. Defaults to current directory if not specified and git_url is not provided."
+        },
+        "git_url": {
+          "type": "string",
+          "description": "URL of Git repository to clone and analyze. If provided, takes precedence over 'path'. Uses shallow clone (depth=1) for efficiency."
+        },
+        "compress": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, outputs structure and metadata only without file contents. Significantly reduces output size (~50x smaller). Use for initial exploration of large codebases."
+        },
+        "output_format": {
+          "type": "string",
+          "enum": ["json", "markdown"],
+          "default": "markdown",
+          "description": "Output format: 'json' for structured data, 'markdown' for human/LLM-readable format with code fences."
+        },
+        "include_extensions": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Only include files with these extensions. Example: ['py', 'ts', 'tsx']. If empty or not specified, includes all supported file types."
+        },
+        "exclude_patterns": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Additional glob patterns to exclude beyond .gitignore. Example: ['*.log', 'tmp/*', 'vendor/**']"
+        },
+        "max_file_size": {
+          "type": "integer",
+          "default": 300000,
+          "description": "Maximum file size in bytes to include content for. Files larger than this show metadata only. Default: 300KB."
+        },
+        "max_lines_per_chunk": {
+          "type": "integer",
+          "default": 1200,
+          "description": "Maximum lines per chunk when splitting large files. Set to 0 to disable chunking. Default: 1200 lines."
+        },
+        "include_line_numbers": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, prefixes each line with its line number. Useful for referencing specific lines."
+        },
+        "max_total_output_bytes": {
+          "type": "integer",
+          "default": 0,
+          "description": "Maximum total output size in bytes. Set to 0 for unlimited. Truncates output if exceeded."
+        }
+      },
+      "required": []
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean",
+          "description": "Whether the operation completed successfully"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {"type": "string"},
+            "message": {"type": "string"}
+          },
+          "description": "Error details if success is false"
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "root_path": {"type": "string"},
+            "total_files": {"type": "integer"},
+            "total_dirs": {"type": "integer"},
+            "total_bytes": {"type": "integer"},
+            "approx_tokens": {"type": "integer"},
+            "languages": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "file_count": {"type": "integer"},
+                  "bytes": {"type": "integer"},
+                  "roles": {"type": "object"}
+                }
+              }
+            },
+            "key_files": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "content": {
+          "type": "string",
+          "description": "The formatted repository dump (markdown or JSON string depending on output_format)"
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "Whether the output was truncated due to size limits"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "name": "Analyze current directory",
+      "input": {},
+      "description": "Dumps the current directory with default settings"
+    },
+    {
+      "name": "Compressed overview of large repo",
+      "input": {
+        "path": "/path/to/large/repo",
+        "compress": true
+      },
+      "description": "Gets structure overview without file contents for initial exploration"
+    },
+    {
+      "name": "Analyze remote repository",
+      "input": {
+        "git_url": "https://github.com/user/repo.git",
+        "compress": true
+      },
+      "description": "Clones and analyzes a remote Git repository"
+    },
+    {
+      "name": "Filter by file type",
+      "input": {
+        "path": ".",
+        "include_extensions": ["py", "ts", "tsx"],
+        "exclude_patterns": ["*_test.py", "*.spec.ts"]
+      },
+      "description": "Analyzes only Python and TypeScript files, excluding tests"
+    },
+    {
+      "name": "JSON output for programmatic use",
+      "input": {
+        "path": ".",
+        "output_format": "json",
+        "compress": true
+      },
+      "description": "Returns structured JSON instead of markdown"
+    }
+  ]
+}

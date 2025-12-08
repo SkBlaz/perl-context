@@ -123,3 +123,83 @@ The generated Markdown is organised into:
    * closing `=== FILE END: src/module/foo.py ===`
 
 Paste only the parts you need into your LLM (overview + selected files/chunks) and refer to files as `lang:path/to/file` and to specific lines when line numbers are enabled.
+
+---
+
+## MCP Tool (for LLM integration)
+
+The `pcontext-mcp` tool provides an MCP (Model Context Protocol) compatible interface for programmatic use by LLMs. It accepts JSON input and returns JSON output.
+
+### Basic usage
+
+```bash
+# Via stdin
+echo '{"path": "."}' | ./pcontext-mcp
+
+# Via --input flag
+./pcontext-mcp --input '{"path": ".", "compress": true}'
+
+# Print schema
+./pcontext-mcp --schema
+```
+
+### Input parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | string | `.` | Local directory to analyze |
+| `git_url` | string | - | Git repository URL to clone |
+| `compress` | boolean | `false` | Structure only, no file contents |
+| `output_format` | string | `markdown` | `markdown` or `json` |
+| `include_extensions` | array | - | Only include these extensions |
+| `exclude_patterns` | array | - | Glob patterns to exclude |
+| `max_file_size` | integer | `300000` | Max file size in bytes |
+| `max_lines_per_chunk` | integer | `1200` | Lines per chunk (0=no chunking) |
+| `include_line_numbers` | boolean | `false` | Add line numbers |
+| `max_total_output_bytes` | integer | `0` | Truncate output (0=unlimited) |
+
+### Example: Analyze repository with filtering
+
+```bash
+./pcontext-mcp --input '{
+  "path": "/path/to/repo",
+  "include_extensions": ["py", "ts", "tsx"],
+  "exclude_patterns": ["*_test.py", "*.spec.ts"],
+  "compress": true
+}'
+```
+
+### Output structure
+
+```json
+{
+  "success": true,
+  "metadata": {
+    "root_path": "/path/to/repo",
+    "total_files": 42,
+    "total_dirs": 10,
+    "total_bytes": 123456,
+    "approx_tokens": 30864,
+    "languages": {...},
+    "key_files": [...]
+  },
+  "content": "# Repository Context Dump\n...",
+  "truncated": false
+}
+```
+
+### Using as an LLM tool
+
+The tool is designed to be called by LLMs that need to understand codebases on the fly. The schema file `mcp-tool.json` contains the full MCP tool definition:
+
+```bash
+# Get the schema for LLM tool registration
+cat mcp-tool.json
+```
+
+Key features for LLM usage:
+- **Structured output**: JSON response with metadata + content
+- **Compression mode**: Quick overview without full file dumps
+- **Smart filtering**: Focus on specific file types or exclude patterns
+- **Language detection**: 50+ programming languages recognized
+- **Key file identification**: Entrypoints, configs, and docs highlighted

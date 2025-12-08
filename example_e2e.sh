@@ -67,7 +67,62 @@ else
     echo "Warning: Compress mode output is not smaller than normal mode."
 fi
 
-echo "All e2e tests passed!"
+echo ""
+echo "=== Testing MCP Tool ==="
+MCP_OUTPUT_FILE="mcp_output.json"
+
+echo "Running MCP tool with local directory..."
+echo '{"path": ".", "compress": true}' | ./pcontext-mcp > "$MCP_OUTPUT_FILE"
+
+# Verify MCP output is valid JSON with success field
+if grep -q '"success"' "$MCP_OUTPUT_FILE"; then
+    echo "MCP tool returns valid JSON with success field."
+else
+    echo "MCP tool e2e test failed - missing success field."
+    exit 1
+fi
+
+# Verify MCP output contains metadata
+if grep -q '"metadata"' "$MCP_OUTPUT_FILE"; then
+    echo "MCP tool includes metadata."
+else
+    echo "MCP tool e2e test failed - missing metadata."
+    exit 1
+fi
+
+# Verify MCP output contains content
+if grep -q '"content"' "$MCP_OUTPUT_FILE"; then
+    echo "MCP tool includes content."
+else
+    echo "MCP tool e2e test failed - missing content."
+    exit 1
+fi
+
+# Test MCP tool with git URL
+echo "Running MCP tool with git URL..."
+MCP_GIT_OUTPUT="mcp_git_output.json"
+./pcontext-mcp --input "{\"git_url\": \"$REPO_URL\", \"compress\": true}" > "$MCP_GIT_OUTPUT"
+
+if grep -q '"success".*true\|"success" : 1' "$MCP_GIT_OUTPUT"; then
+    echo "MCP tool git clone test passed."
+else
+    echo "MCP tool git clone test failed."
+    cat "$MCP_GIT_OUTPUT"
+    exit 1
+fi
+
+# Test MCP schema output
+echo "Testing MCP schema output..."
+./pcontext-mcp --schema > /dev/null
+if [ $? -eq 0 ]; then
+    echo "MCP schema output works."
+else
+    echo "MCP schema output failed."
+    exit 1
+fi
+
+echo ""
+echo "=== All e2e tests passed! ==="
 
 # Clean up
-rm "$OUTPUT_FILE" "$COMPRESSED_OUTPUT_FILE"
+rm -f "$OUTPUT_FILE" "$COMPRESSED_OUTPUT_FILE" "$MCP_OUTPUT_FILE" "$MCP_GIT_OUTPUT"

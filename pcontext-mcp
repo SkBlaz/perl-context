@@ -1,0 +1,625 @@
+#!/usr/bin/env perl
+#
+# pcontext-mcp - MCP Tool for dumping repository context
+#
+# Usage:
+#   echo '{"path": "."}' | ./pcontext-mcp
+#   ./pcontext-mcp --input '{"path": ".", "compress": true}'
+#   ./pcontext-mcp --schema    # Print tool schema
+#   ./pcontext-mcp --help      # Print help
+#
+# This tool follows the MCP (Model Context Protocol) conventions for
+# offline tool invocation. It accepts JSON input and returns JSON output.
+#
+
+use strict;
+use warnings;
+use utf8;
+use FindBin qw($RealBin);
+use lib "$RealBin/lib";
+use Getopt::Long;
+use PContext qw(analyze_repository);
+
+binmode STDIN,  ':encoding(UTF-8)';
+binmode STDOUT, ':encoding(UTF-8)';
+binmode STDERR, ':encoding(UTF-8)';
+
+our $VERSION = '1.0.0';
+
+# ------------------------------------------------------------
+# JSON handling
+# ------------------------------------------------------------
+
+my $JSON_MODULE;
+
+sub init_json {
+    for my $mod (qw(JSON::XS JSON::PP JSON)) {
+        eval "require $mod";
+        unless ($@) {
+            $JSON_MODULE = $mod;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+sub decode_json_input {
+    my ($str) = @_;
+
+    if ($JSON_MODULE) {
+        my $json = $JSON_MODULE->new->utf8->allow_nonref;
+        return eval { $json->decode($str) };
+    }
+    else {
+        return _simple_json_decode($str);
+    }
+}
+
+sub encode_json_output {
+    my ($data) = @_;
+
+    if ($JSON_MODULE) {
+        my $json = $JSON_MODULE->new->utf8->pretty->canonical->allow_nonref;
+        return $json->encode($data);
+    }
+    else {
+        return _simple_json_encode($data);
+    }
+}
+
+# Minimal JSON decoder for when no JSON module is available
+sub _simple_json_decode {
+    my ($str) = @_;
+    $str =~ s/^\s+|\s+$//g;
+
+    if ( $str =~ /^\{/ ) {
+        return _parse_object( \$str );
+    }
+    elsif ( $str =~ /^\[/ ) {
+        return _parse_array( \$str );
+    }
+    elsif ( $str =~ /^"/ ) {
+        return _parse_string( \$str );
+    }
+    elsif ( $str =~ /^-?\d/ ) {
+        return _parse_number( \$str );
+    }
+    elsif ( $str =~ /^true/i ) {
+        return 1;
+    }
+    elsif ( $str =~ /^false/i ) {
+        return 0;
+    }
+    elsif ( $str =~ /^null/i ) {
+        return undef;
+    }
+    die "Invalid JSON: $str\n";
+}
+
+sub _parse_object {
+    my ($ref) = @_;
+    $$ref =~ s/^\{\s*//;
+    my %hash;
+
+    while ( $$ref !~ /^\}/ ) {
+        my $key = _parse_string($ref);
+        $$ref =~ s/^\s*:\s*//;
+        my $val = _parse_value($ref);
+        $hash{$key} = $val;
+        $$ref =~ s/^\s*,\s*//;
+    }
+    $$ref =~ s/^\}\s*//;
+    return \%hash;
+}
+
+sub _parse_array {
+    my ($ref) = @_;
+    $$ref =~ s/^\[\s*//;
+    my @arr;
+
+    while ( $$ref !~ /^\]/ ) {
+        push @arr, _parse_value($ref);
+        $$ref =~ s/^\s*,\s*//;
+    }
+    $$ref =~ s/^\]\s*//;
+    return \@arr;
+}
+
+sub _parse_string {
+    my ($ref) = @_;
+    $$ref =~ s/^"//;
+    my $str = '';
+
+    while ( $$ref !~ /^"/ ) {
+        if ( $$ref =~ s/^\\(.)// ) {
+            my $esc = $1;
+            if    ( $esc eq 'n' )  { $str .= "\n"; }
+            elsif ( $esc eq 'r' )  { $str .= "\r"; }
+            elsif ( $esc eq 't' )  { $str .= "\t"; }
+            elsif ( $esc eq '\\' ) { $str .= '\\'; }
+            elsif ( $esc eq '"' )  { $str .= '"'; }
+            elsif ( $esc eq 'u' ) {
+                $$ref =~ s/^([0-9a-fA-F]{4})//;
+                $str .= chr( hex($1) );
+            }
+            else { $str .= $esc; }
+        }
+        else {
+            $$ref =~ s/^(.)//s;
+            $str .= $1;
+        }
+    }
+    $$ref =~ s/^"\s*//;
+    return $str;
+}
+
+sub _parse_number {
+    my ($ref) = @_;
+    $$ref =~ s/^(-?\d+\.?\d*(?:[eE][+-]?\d+)?)\s*//;
+    return $1 + 0;
+}
+
+sub _parse_value {
+    my ($ref) = @_;
+    $$ref =~ s/^\s+//;
+
+    if ( $$ref =~ /^\{/ ) { return _parse_object($ref); }
+    if ( $$ref =~ /^\[/ ) { return _parse_array($ref); }
+    if ( $$ref =~ /^"/ )  { return _parse_string($ref); }
+    if ( $$ref =~ /^-?\d/ ) { return _parse_number($ref); }
+    if ( $$ref =~ s/^true\s*//i )  { return 1; }
+    if ( $$ref =~ s/^false\s*//i ) { return 0; }
+    if ( $$ref =~ s/^null\s*//i )  { return undef; }
+    die "Invalid JSON value\n";
+}
+
+# Simple JSON encoder
+sub _simple_json_encode {
+    my ($data) = @_;
+    return _encode_value($data);
+}
+
+sub _encode_value {
+    my ($val) = @_;
+    return 'null' unless defined $val;
+
+    my $ref = ref $val;
+    if ( !$ref ) {
+        if ( $val =~ /^-?\d+\.?\d*(?:[eE][+-]?\d+)?$/ && $val !~ /^0\d/ ) {
+            return $val;
+        }
+        $val =~ s/\\/\\\\/g;
+        $val =~ s/"/\\"/g;
+        $val =~ s/\n/\\n/g;
+        $val =~ s/\r/\\r/g;
+        $val =~ s/\t/\\t/g;
+        return "\"$val\"";
+    }
+    elsif ( $ref eq 'HASH' ) {
+        my @pairs;
+        for my $k ( sort keys %$val ) {
+            my $ek = $k;
+            $ek =~ s/\\/\\\\/g;
+            $ek =~ s/"/\\"/g;
+            push @pairs, "\"$ek\": " . _encode_value( $val->{$k} );
+        }
+        return "{\n  " . join( ",\n  ", @pairs ) . "\n}";
+    }
+    elsif ( $ref eq 'ARRAY' ) {
+        return "[\n  " . join( ",\n  ", map { _encode_value($_) } @$val ) . "\n]";
+    }
+    elsif ( $ref eq 'SCALAR' ) {
+        return $$val ? 'true' : 'false';
+    }
+    else {
+        return "\"$val\"";
+    }
+}
+
+# ------------------------------------------------------------
+# Input validation
+# ------------------------------------------------------------
+
+sub validate_input {
+    my ($params) = @_;
+    my @errors;
+
+    return { valid => 1, params => {} } unless defined $params;
+    return { valid => 0, error => 'Input must be a JSON object' }
+        unless ref $params eq 'HASH';
+
+    # Validate path
+    if ( defined $params->{path} && ref $params->{path} ) {
+        push @errors, "'path' must be a string";
+    }
+
+    # Validate git_url
+    if ( defined $params->{git_url} ) {
+        if ( ref $params->{git_url} ) {
+            push @errors, "'git_url' must be a string";
+        }
+        elsif ( $params->{git_url} !~ m{^(https?|git|ssh)://|^git@} ) {
+            push @errors, "'git_url' must be a valid Git URL";
+        }
+    }
+
+    # Validate compress (JSON booleans can be JSON::PP::Boolean objects)
+    if ( defined $params->{compress} ) {
+        my $ref = ref $params->{compress};
+        if ( $ref && $ref !~ /^JSON::.*::Boolean$/ ) {
+            push @errors, "'compress' must be a boolean";
+        }
+    }
+
+    # Validate output_format
+    if ( defined $params->{output_format} ) {
+        if ( ref $params->{output_format} ) {
+            push @errors, "'output_format' must be a string";
+        }
+        elsif ( $params->{output_format} !~ /^(json|markdown)$/ ) {
+            push @errors, "'output_format' must be 'json' or 'markdown'";
+        }
+    }
+
+    # Validate include_extensions
+    if ( defined $params->{include_extensions} ) {
+        if ( ref $params->{include_extensions} ne 'ARRAY' ) {
+            push @errors, "'include_extensions' must be an array";
+        }
+        else {
+            for my $ext ( @{ $params->{include_extensions} } ) {
+                if ( ref $ext ) {
+                    push @errors, "'include_extensions' items must be strings";
+                    last;
+                }
+            }
+        }
+    }
+
+    # Validate exclude_patterns
+    if ( defined $params->{exclude_patterns} ) {
+        if ( ref $params->{exclude_patterns} ne 'ARRAY' ) {
+            push @errors, "'exclude_patterns' must be an array";
+        }
+        else {
+            for my $pat ( @{ $params->{exclude_patterns} } ) {
+                if ( ref $pat ) {
+                    push @errors, "'exclude_patterns' items must be strings";
+                    last;
+                }
+            }
+        }
+    }
+
+    # Validate numeric parameters
+    for my $field (qw(max_file_size max_lines_per_chunk max_total_output_bytes)) {
+        if ( defined $params->{$field} ) {
+            if ( $params->{$field} !~ /^-?\d+$/ ) {
+                push @errors, "'$field' must be an integer";
+            }
+            elsif ( $params->{$field} < 0 ) {
+                push @errors, "'$field' must be non-negative";
+            }
+        }
+    }
+
+    # Validate include_line_numbers (JSON booleans can be JSON::PP::Boolean objects)
+    if ( defined $params->{include_line_numbers} ) {
+        my $ref = ref $params->{include_line_numbers};
+        if ( $ref && $ref !~ /^JSON::.*::Boolean$/ ) {
+            push @errors, "'include_line_numbers' must be a boolean";
+        }
+    }
+
+    if (@errors) {
+        return {
+            valid => 0,
+            error => join( '; ', @errors ),
+        };
+    }
+
+    return { valid => 1, params => $params };
+}
+
+# ------------------------------------------------------------
+# Tool schema
+# ------------------------------------------------------------
+
+sub get_tool_schema {
+    return {
+        schema_version => '1.0.0',
+        name           => 'dump_repo_context',
+        version        => $VERSION,
+        description    => 'Analyzes and dumps repository content into structured LLM-friendly format',
+        input_schema   => {
+            type       => 'object',
+            properties => {
+                path => {
+                    type        => 'string',
+                    description => 'Path to local directory to analyze',
+                },
+                git_url => {
+                    type        => 'string',
+                    description => 'URL of Git repository to clone and analyze',
+                },
+                compress => {
+                    type        => 'boolean',
+                    default     => \0,
+                    description => 'Output structure only without file contents',
+                },
+                output_format => {
+                    type        => 'string',
+                    enum        => [ 'json', 'markdown' ],
+                    default     => 'markdown',
+                    description => 'Output format',
+                },
+                include_extensions => {
+                    type        => 'array',
+                    items       => { type => 'string' },
+                    description => 'Only include files with these extensions',
+                },
+                exclude_patterns => {
+                    type        => 'array',
+                    items       => { type => 'string' },
+                    description => 'Additional glob patterns to exclude',
+                },
+                max_file_size => {
+                    type        => 'integer',
+                    default     => 300000,
+                    description => 'Maximum file size in bytes to include content',
+                },
+                max_lines_per_chunk => {
+                    type        => 'integer',
+                    default     => 1200,
+                    description => 'Maximum lines per chunk (0 = no chunking)',
+                },
+                include_line_numbers => {
+                    type        => 'boolean',
+                    default     => \0,
+                    description => 'Prefix lines with line numbers',
+                },
+                max_total_output_bytes => {
+                    type        => 'integer',
+                    default     => 0,
+                    description => 'Truncate output at this size (0 = unlimited)',
+                },
+            },
+            required => [],
+        },
+    };
+}
+
+# ------------------------------------------------------------
+# Help message
+# ------------------------------------------------------------
+
+sub print_help {
+    print <<"HELP";
+pcontext-mcp v$VERSION - MCP Tool for Repository Context Dumping
+
+USAGE:
+    pcontext-mcp [OPTIONS]
+
+OPTIONS:
+    --input JSON     Provide input as command-line argument
+    --schema         Print the tool's JSON schema and exit
+    --help, -h       Show this help message
+
+INPUT METHODS:
+    1. Via stdin (pipe):
+       echo '{"path": "."}' | ./pcontext-mcp
+
+    2. Via --input flag:
+       ./pcontext-mcp --input '{"path": ".", "compress": true}'
+
+INPUT PARAMETERS:
+    path                    Path to local directory (default: ".")
+    git_url                 Git repository URL to clone
+    compress                Boolean, metadata only if true (default: false)
+    output_format           "markdown" or "json" (default: "markdown")
+    include_extensions      Array of extensions to include
+    exclude_patterns        Array of glob patterns to exclude
+    max_file_size           Max bytes per file (default: 300000)
+    max_lines_per_chunk     Lines per chunk, 0=none (default: 1200)
+    include_line_numbers    Boolean, add line numbers (default: false)
+    max_total_output_bytes  Truncate output at bytes, 0=unlimited
+
+OUTPUT:
+    JSON object with:
+    - success: boolean
+    - error: {code, message} if failed
+    - metadata: repository statistics
+    - content: formatted dump (markdown or JSON string)
+    - truncated: boolean if output was cut
+
+EXAMPLES:
+    # Analyze current directory
+    echo '{}' | ./pcontext-mcp
+
+    # Analyze with compression (structure only)
+    ./pcontext-mcp --input '{"path": "src", "compress": true}'
+
+    # Clone and analyze remote repo
+    ./pcontext-mcp --input '{"git_url": "https://github.com/user/repo.git"}'
+
+    # Filter by extensions
+    ./pcontext-mcp --input '{"include_extensions": ["py", "ts"]}'
+
+    # Get JSON output
+    ./pcontext-mcp --input '{"output_format": "json", "compress": true}'
+
+MCP INTEGRATION:
+    This tool follows MCP conventions for offline tool invocation.
+    See mcp-tool.json for the full schema definition.
+
+HELP
+}
+
+# ------------------------------------------------------------
+# Main execution
+# ------------------------------------------------------------
+
+sub output_result {
+    my ($result) = @_;
+    print encode_json_output($result);
+    print "\n";
+}
+
+sub output_error {
+    my ( $code, $message ) = @_;
+    output_result({
+        success => \0,
+        error   => {
+            code    => $code,
+            message => $message,
+        },
+    });
+}
+
+sub main {
+    init_json();
+
+    my $input_json;
+    my $show_schema = 0;
+    my $show_help   = 0;
+
+    GetOptions(
+        'input=s' => \$input_json,
+        'schema'  => \$show_schema,
+        'help|h'  => \$show_help,
+    ) or do {
+        output_error( 'INVALID_ARGS', 'Invalid command line arguments' );
+        exit 1;
+    };
+
+    if ($show_help) {
+        print_help();
+        exit 0;
+    }
+
+    if ($show_schema) {
+        print encode_json_output( get_tool_schema() );
+        print "\n";
+        exit 0;
+    }
+
+    # Read input
+    my $raw_input;
+    if ( defined $input_json ) {
+        $raw_input = $input_json;
+    }
+    elsif ( !-t STDIN ) {
+        local $/;
+        $raw_input = <STDIN>;
+    }
+    else {
+        # No input provided - use defaults
+        $raw_input = '{}';
+    }
+
+    # Parse JSON input
+    my $params;
+    eval {
+        $params = decode_json_input($raw_input);
+    };
+    if ($@) {
+        output_error( 'INVALID_JSON', "Failed to parse JSON input: $@" );
+        exit 1;
+    }
+
+    # Validate input
+    my $validation = validate_input($params);
+    unless ( $validation->{valid} ) {
+        output_error( 'VALIDATION_ERROR', $validation->{error} );
+        exit 1;
+    }
+
+    # Execute analysis
+    my $result = analyze_repository($params);
+
+    # Output result
+    output_result($result);
+
+    exit( $result->{success} ? 0 : 1 );
+}
+
+main();
+
+__END__
+
+=head1 NAME
+
+pcontext-mcp - MCP Tool for dumping repository context
+
+=head1 SYNOPSIS
+
+    # Via stdin
+    echo '{"path": "."}' | ./pcontext-mcp
+
+    # Via command line
+    ./pcontext-mcp --input '{"path": ".", "compress": true}'
+
+    # Print schema
+    ./pcontext-mcp --schema
+
+=head1 DESCRIPTION
+
+This tool provides an MCP-compatible interface for analyzing source code
+repositories and generating LLM-friendly output. It accepts JSON input
+and returns JSON output.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--input> JSON
+
+Provide input parameters as a JSON string.
+
+=item B<--schema>
+
+Print the tool's JSON schema and exit.
+
+=item B<--help>
+
+Print help message and exit.
+
+=back
+
+=head1 INPUT FORMAT
+
+The tool accepts a JSON object with the following optional fields:
+
+    {
+        "path": ".",
+        "git_url": "https://github.com/user/repo.git",
+        "compress": false,
+        "output_format": "markdown",
+        "include_extensions": ["py", "ts"],
+        "exclude_patterns": ["*.log"],
+        "max_file_size": 300000,
+        "max_lines_per_chunk": 1200,
+        "include_line_numbers": false,
+        "max_total_output_bytes": 0
+    }
+
+=head1 OUTPUT FORMAT
+
+Returns a JSON object:
+
+    {
+        "success": true,
+        "metadata": {
+            "root_path": "/path/to/repo",
+            "total_files": 42,
+            "total_dirs": 10,
+            "total_bytes": 123456,
+            "approx_tokens": 30864,
+            "languages": {...},
+            "key_files": [...]
+        },
+        "content": "...",
+        "truncated": false
+    }
+
+=cut
