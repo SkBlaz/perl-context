@@ -203,3 +203,66 @@ Key features for LLM usage:
 - **Smart filtering**: Focus on specific file types or exclude patterns
 - **Language detection**: 50+ programming languages recognized
 - **Key file identification**: Entrypoints, configs, and docs highlighted
+
+---
+
+## Standalone Version (Portable)
+
+For maximum portability, use `pcontext-mcp-standalone` - a single self-contained Perl script with no external dependencies (only core Perl modules).
+
+### Setup
+
+```bash
+# Copy to your PATH (e.g., ~/.local/bin)
+cp pcontext-mcp-standalone ~/.local/bin/
+chmod +x ~/.local/bin/pcontext-mcp-standalone
+```
+
+### Usage from any directory
+
+```bash
+# Get help
+pcontext-mcp-standalone --help
+
+# Analyze current directory
+echo '{}' | pcontext-mcp-standalone
+
+# Analyze a specific repo with compression
+pcontext-mcp-standalone --input '{"path": "/path/to/repo", "compress": true}'
+
+# Clone and analyze a remote repository
+pcontext-mcp-standalone --input '{"git_url": "https://github.com/user/repo.git"}'
+```
+
+### Using with LLMs (e.g., Claude)
+
+Point the LLM to the standalone tool and it can:
+1. Run `pcontext-mcp-standalone --help` to learn the interface
+2. Run `pcontext-mcp-standalone --schema` to get the full JSON schema
+3. Call the tool with appropriate JSON input to analyze any repository
+
+Example prompt:
+> "Use `/path/to/pcontext-mcp-standalone --help` to learn about the repo context tool, then use it to analyze the current project."
+
+The standalone version includes all functionality of the modular version and requires only Perl 5.10+ with core modules.
+
+---
+
+## Installation
+
+```bash
+# Run tests
+make test
+
+# Install to /usr/local (requires sudo)
+sudo make install
+
+# Or install to user directory
+make install PREFIX=~/.local
+```
+
+---
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file.

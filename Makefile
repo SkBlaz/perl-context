@@ -10,7 +10,7 @@ PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 LIBDIR = $(PREFIX)/share/perl5
 
-SCRIPTS = pcontext.pl pcontext-mcp
+SCRIPTS = pcontext.pl pcontext-mcp pcontext-mcp-standalone
 LIBS = lib/PContext.pm
 
 .PHONY: all test install uninstall clean help
@@ -37,6 +37,7 @@ test:
 	@echo "=== Checking syntax ==="
 	perl -c pcontext.pl
 	perl -c pcontext-mcp
+	perl -c pcontext-mcp-standalone
 	perl -c lib/PContext.pm
 	@echo ""
 	@echo "=== Running pcontext.t ==="
@@ -53,11 +54,13 @@ install: test
 	install -d $(LIBDIR)/PContext
 	install -m 755 pcontext.pl $(BINDIR)/pcontext
 	install -m 755 pcontext-mcp $(BINDIR)/pcontext-mcp
+	install -m 755 pcontext-mcp-standalone $(BINDIR)/pcontext-mcp-standalone
 	install -m 644 lib/PContext.pm $(LIBDIR)/PContext.pm
 	@echo ""
 	@echo "Installed:"
 	@echo "  $(BINDIR)/pcontext"
 	@echo "  $(BINDIR)/pcontext-mcp"
+	@echo "  $(BINDIR)/pcontext-mcp-standalone (self-contained, no deps)"
 	@echo "  $(LIBDIR)/PContext.pm"
 	@echo ""
 	@echo "Note: Add $(LIBDIR) to PERL5LIB if not in default path:"
@@ -67,6 +70,7 @@ uninstall:
 	@echo "Uninstalling from $(PREFIX)..."
 	rm -f $(BINDIR)/pcontext
 	rm -f $(BINDIR)/pcontext-mcp
+	rm -f $(BINDIR)/pcontext-mcp-standalone
 	rm -f $(LIBDIR)/PContext.pm
 	-rmdir $(LIBDIR)/PContext 2>/dev/null || true
 	@echo "Done"

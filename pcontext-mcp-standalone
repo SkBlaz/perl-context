@@ -1,0 +1,654 @@
+#!/usr/bin/env perl
+#
+# pcontext-mcp-standalone - Self-contained MCP Tool for repository context dumping
+#
+# This is a standalone version with all dependencies bundled.
+# Copy this single file anywhere and it just works.
+#
+# Usage:
+#   echo '{"path": "."}' | ./pcontext-mcp-standalone
+#   ./pcontext-mcp-standalone --input '{"compress": true}'
+#   ./pcontext-mcp-standalone --schema
+#   ./pcontext-mcp-standalone --help
+#
+
+use strict;
+use warnings;
+use utf8;
+use File::Find;
+use File::Spec;
+use File::Path 'remove_tree';
+use File::Temp 'tempdir';
+use Cwd 'abs_path';
+use Getopt::Long;
+
+binmode STDIN,  ':encoding(UTF-8)';
+binmode STDOUT, ':encoding(UTF-8)';
+binmode STDERR, ':encoding(UTF-8)';
+
+our $VERSION = '1.0.0';
+
+# ============================================================================
+# EMBEDDED PContext MODULE
+# ============================================================================
+
+package PContext;
+use strict;
+use warnings;
+use utf8;
+use File::Find;
+use File::Spec;
+use File::Path 'remove_tree';
+use File::Temp 'tempdir';
+use Cwd 'abs_path';
+
+our $tmp_root;
+
+END {
+    if ( defined $tmp_root && -d $tmp_root ) {
+        remove_tree( $tmp_root, { error => \my $err } );
+    }
+}
+
+my %ext_to_lang = (
+    pl => 'perl', pm => 'perl', t => 'perl',
+    py => 'python', pyw => 'python', pyi => 'python',
+    rb => 'ruby', erb => 'ruby', rake => 'ruby',
+    js => 'javascript', mjs => 'javascript', cjs => 'javascript',
+    ts => 'typescript', tsx => 'tsx', jsx => 'jsx',
+    java => 'java', c => 'c', h => 'c',
+    cpp => 'cpp', cc => 'cpp', cxx => 'cpp', hh => 'cpp', hpp => 'cpp', hxx => 'cpp',
+    go => 'go', rs => 'rust', php => 'php',
+    cs => 'csharp', fs => 'fsharp',
+    sh => 'bash', bash => 'bash', zsh => 'zsh', fish => 'fish',
+    ps1 => 'powershell', psm1 => 'powershell',
+    md => 'markdown', markdown => 'markdown', rst => 'rst',
+    json => 'json', jsonc => 'json',
+    yml => 'yaml', yaml => 'yaml',
+    html => 'html', htm => 'html', xhtml => 'html',
+    css => 'css', scss => 'scss', sass => 'sass', less => 'less',
+    sql => 'sql', kt => 'kotlin', kts => 'kotlin', swift => 'swift',
+    r => 'r', R => 'r', hs => 'haskell', lhs => 'haskell',
+    toml => 'toml', ini => 'ini', cfg => 'ini',
+    xml => 'xml', xsl => 'xml', vue => 'vue', svelte => 'svelte',
+    lua => 'lua', ex => 'elixir', exs => 'elixir',
+    erl => 'erlang', hrl => 'erlang', clj => 'clojure', cljs => 'clojure',
+    scala => 'scala', sc => 'scala', dart => 'dart',
+    zig => 'zig', nim => 'nim', v => 'v',
+    proto => 'protobuf', graphql => 'graphql', gql => 'graphql',
+    tf => 'terraform', tfvars => 'terraform',
+    dockerfile => 'dockerfile', makefile => 'makefile',
+);
+
+my %lang_name = (
+    perl => 'Perl', python => 'Python', ruby => 'Ruby',
+    javascript => 'JavaScript', typescript => 'TypeScript',
+    tsx => 'TypeScript (TSX)', jsx => 'JavaScript (JSX)',
+    java => 'Java', c => 'C', cpp => 'C++',
+    go => 'Go', rust => 'Rust', php => 'PHP',
+    csharp => 'C#', fsharp => 'F#',
+    bash => 'Shell (bash)', zsh => 'Shell (zsh)', fish => 'Fish', powershell => 'PowerShell',
+    markdown => 'Markdown', rst => 'reStructuredText',
+    json => 'JSON', yaml => 'YAML',
+    html => 'HTML', css => 'CSS', scss => 'SCSS', sass => 'Sass', less => 'Less',
+    sql => 'SQL', kotlin => 'Kotlin', swift => 'Swift',
+    r => 'R', haskell => 'Haskell',
+    toml => 'TOML', ini => 'INI', xml => 'XML',
+    vue => 'Vue', svelte => 'Svelte', lua => 'Lua',
+    elixir => 'Elixir', erlang => 'Erlang', clojure => 'Clojure',
+    scala => 'Scala', dart => 'Dart', zig => 'Zig', nim => 'Nim', v => 'V',
+    protobuf => 'Protocol Buffers', graphql => 'GraphQL', terraform => 'Terraform',
+    dockerfile => 'Dockerfile', makefile => 'Makefile', cmake => 'CMake',
+    gitignore => 'Git Ignore', dockerignore => 'Docker Ignore', editorconfig => 'EditorConfig',
+    text => 'Text / other',
+);
+
+my %shebang_to_lang = (
+    perl => 'perl', python => 'python', python3 => 'python', python2 => 'python',
+    ruby => 'ruby', node => 'javascript', nodejs => 'javascript',
+    bash => 'bash', sh => 'bash', zsh => 'zsh', fish => 'fish',
+    php => 'php', lua => 'lua', Rscript => 'r', pwsh => 'powershell',
+);
+
+my %filename_to_lang = (
+    makefile => 'makefile', gnumakefile => 'makefile',
+    dockerfile => 'dockerfile', vagrantfile => 'ruby',
+    gemfile => 'ruby', rakefile => 'ruby', procfile => 'yaml',
+    brewfile => 'ruby', justfile => 'makefile', 'cmakelists.txt' => 'cmake',
+);
+
+sub lang_display_name {
+    my ($k) = @_;
+    $k ||= 'text';
+    return $lang_name{$k} || ucfirst($k);
+}
+
+sub get_lang_key {
+    my ($ext) = @_;
+    return '' unless defined $ext && length $ext;
+    return $ext_to_lang{ lc($ext) } || '';
+}
+
+sub detect_lang_from_shebang {
+    my ($filepath) = @_;
+    return '' unless defined $filepath && -f $filepath && -r $filepath && -T $filepath;
+    open my $fh, '<', $filepath or return '';
+    my $first_line = <$fh>;
+    close $fh;
+    return '' unless defined $first_line && $first_line =~ /^#!/;
+    if ( $first_line =~ m{^#!\s*/usr/bin/env\s+(\S+)} ) {
+        return $shebang_to_lang{$1} || '';
+    }
+    elsif ( $first_line =~ m{^#!\s*\S+/(\w+)} ) {
+        return $shebang_to_lang{$1} || '';
+    }
+    return '';
+}
+
+sub detect_lang_from_filename {
+    my ($rel) = @_;
+    return '' unless defined $rel;
+    my ($filename) = $rel =~ m{([^/]+)$};
+    return '' unless $filename;
+    return $filename_to_lang{ lc($filename) } || '';
+}
+
+sub glob_to_regex {
+    my ($pat) = @_;
+    $pat =~ s/^\s+|\s+$//g;
+    return if not $pat or $pat =~ /^#/;
+    return if $pat =~ s/^!//;
+    my $re = quotemeta($pat);
+    $re =~ s{/\\*\\*$}{/.*}g;
+    $re =~ s{\\\*\\\*}{.*}g;
+    $re =~ s{\\\*}{[^/]*}g;
+    $re =~ s{\\\?}{[^/]}g;
+    return substr($pat, 0, 1) eq '/' ? qr{^$re} : qr{(?:^|/)$re};
+}
+
+sub build_ignore_list {
+    my ($root, $exclude_patterns) = @_;
+    my @ignore_re;
+    my $gitignore = "$root/.gitignore";
+    if (-f $gitignore && open my $gi, '<', $gitignore) {
+        while (my $pat = <$gi>) {
+            chomp $pat;
+            my $re = glob_to_regex($pat);
+            push @ignore_re, $re if $re;
+        }
+        close $gi;
+    }
+    if (ref $exclude_patterns eq 'ARRAY') {
+        for my $pat (@$exclude_patterns) {
+            my $re = glob_to_regex($pat);
+            push @ignore_re, $re if $re;
+        }
+    }
+    return \@ignore_re;
+}
+
+sub is_ignored {
+    my ($rel, $ignore_re) = @_;
+    for my $re (@$ignore_re) { return 1 if $rel =~ $re; }
+    return 0;
+}
+
+sub classify_file {
+    my ($rel, $ext, $lang_key) = @_;
+    my $lc = lc $rel;
+    my ($category, $is_config, $is_entry) = (undef, 0, 0);
+
+    # Entrypoints
+    if ($lang_key && $lang_key eq 'python') {
+        $is_entry = 1 if $lc =~ m{(^|/)(main|app|wsgi|asgi|manage|cli|__main__)\.py$};
+    } elsif ($lang_key && $lang_key =~ /^(javascript|typescript|tsx|jsx)$/) {
+        $is_entry = 1 if $lc =~ m{(^|/)(src/)?(index|main|app|server|cli)\.(js|jsx|ts|tsx)$};
+    } elsif ($lang_key && $lang_key eq 'go') {
+        $is_entry = 1 if $lc =~ m{(^|/)cmd/[^/]+/main\.go$} || $lc =~ m{(^|/)main\.go$};
+    } elsif ($lang_key && $lang_key eq 'rust') {
+        $is_entry = 1 if $lc =~ m{(^|/)src/main\.rs$} || $lc =~ m{(^|/)src/bin/[^/]+\.rs$};
+    } elsif ($lang_key && $lang_key eq 'java') {
+        $is_entry = 1 if $lc =~ m{(^|/)src/main/java/.+/(Main|Application)\.java$};
+    } elsif ($lang_key && $lang_key eq 'perl') {
+        $is_entry = 1 if $lc =~ m{(^|/)(script|bin)/[^/]+\.pl$} || $lc =~ m{^[^/]+\.pl$};
+    }
+
+    # Tests
+    if ($lc =~ m{(^|/)(test|tests|spec|specs|__tests__|t)/} || $lc =~ m{(^|/)test_}
+        || $lc =~ m{_test\.[a-z0-9_]+$} || $lc =~ m{\.spec\.[a-z0-9_]+$}
+        || $lc =~ m{\.test\.[a-z0-9_]+$} || $lc =~ m{\.t$}) {
+        $category = 'test';
+    }
+
+    # Config
+    my @configs = qw(package.json tsconfig.json pyproject.toml setup.py requirements.txt
+        Cargo.toml go.mod Makefile pom.xml Gemfile docker-compose.yml Dockerfile);
+    for my $cfg (@configs) {
+        if (index($lc, "/".lc($cfg)) >= 0 || substr($lc, -length($cfg)) eq lc($cfg)) {
+            $category = 'config' unless defined $category;
+            $is_config = 1;
+            last;
+        }
+    }
+    if (!defined $category && $lc =~ m{\.github/workflows/}) {
+        $category = 'config'; $is_config = 1;
+    }
+
+    # Docs
+    if (!defined $category && $lc =~ m{(^|/)(docs?|documentation)/} && $ext =~ /^(md|rst|txt)$/i) {
+        $category = 'docs';
+    }
+    if (!defined $category && $lc =~ m{(^|/)(readme|changelog|license|copying|contributing)(\.|$)}i) {
+        $category = 'docs';
+    }
+
+    # Fallback
+    $category //= ($lang_key && $lang_key ne '' && $ext !~ /^(md|txt|rst)$/i) ? 'source' : 'other';
+
+    return { category => $category, is_config => $is_config, is_entry => $is_entry };
+}
+
+sub get_role_hint {
+    my ($info) = @_;
+    my @bits;
+    push @bits, 'probable application entrypoint' if $info->{is_entry};
+    push @bits, 'Documentation' if $info->{category} eq 'docs';
+    return join(', ', @bits);
+}
+
+sub clone_git_repo {
+    my ($git_url) = @_;
+    return { error => 'git_url is required' } unless $git_url;
+    $tmp_root = tempdir("pcontext-XXXXXX", CLEANUP => 0, TMPDIR => 1);
+    my $target = "$tmp_root/repo";
+    my $rc = system('git', 'clone', '--depth', '1', '--quiet', $git_url, $target);
+    return { error => "git clone failed", code => "GIT_CLONE_FAILED" } if $rc != 0;
+    return { path => abs_path($target) };
+}
+
+sub walk_repo {
+    my ($root, $config, $ignore_re) = @_;
+    my (@paths, @files, %is_dir);
+
+    find({
+        no_chdir => 1,
+        wanted => sub {
+            my $path = $File::Find::name;
+            return if $path eq $root;
+            if (-d $path) {
+                my ($name) = $path =~ m{([^/]+)$};
+                if ($name =~ /^\.(git|svn|hg|bzr)$/ ||
+                    $name =~ /^(node_modules|dist|build|target|venv|\.venv|__pycache__|\.cache|coverage)$/) {
+                    $File::Find::prune = 1;
+                    return;
+                }
+            }
+            my $rel = File::Spec->abs2rel($path, $root);
+            return if is_ignored($rel, $ignore_re);
+            push @paths, $rel;
+            if (-d $path) { $is_dir{$rel} = 1; }
+            elsif (-f $path) {
+                if (%{$config->{only_ext}}) {
+                    my ($ext) = $rel =~ /\.([A-Za-z0-9_]+)$/;
+                    return if !$ext || !$config->{only_ext}{lc $ext};
+                }
+                push @files, $rel;
+            }
+        },
+    }, $root);
+
+    return { paths => [sort @paths], files => [sort @files], is_dir => \%is_dir };
+}
+
+sub collect_file_info {
+    my ($walk, $root) = @_;
+    my (%file_info, %lang_stats, %ext_count);
+    my ($total_bytes, $dir_count) = (0, 0);
+
+    $dir_count++ for grep { $walk->{is_dir}{$_} } @{$walk->{paths}};
+
+    for my $rel (@{$walk->{files}}) {
+        my $full = "$root/$rel";
+        my $size = -s $full // 0;
+        my $is_text = -T $full;
+        $total_bytes += $size;
+
+        my ($ext) = $rel =~ /\.([A-Za-z0-9_]+)$/;
+        my $lang_ext = lc($ext // '');
+        $ext_count{$lang_ext}++ if $lang_ext;
+
+        my $lang_key = get_lang_key($lang_ext);
+        $lang_key ||= detect_lang_from_filename($rel);
+        $lang_key ||= detect_lang_from_shebang($full) if $is_text;
+
+        my $lang_id = $lang_key || $lang_ext || 'text';
+        my $lang_name = lang_display_name($lang_id);
+        my $class = classify_file($rel, $lang_ext, $lang_key);
+
+        $file_info{$rel} = {
+            rel => $rel, full => $full, size => $size, is_text => $is_text,
+            ext => $lang_ext, lang_key => $lang_key, lang_id => $lang_id,
+            lang_name => $lang_name, %$class,
+        };
+
+        my $s = $lang_stats{$lang_id} ||= { name => $lang_name, count => 0, bytes => 0, by_role => {}, entries => [], configs => [] };
+        $s->{count}++;
+        $s->{bytes} += $size;
+        $s->{by_role}{$class->{category}}++;
+        push @{$s->{entries}}, $rel if $class->{is_entry};
+        push @{$s->{configs}}, $rel if $class->{is_config};
+    }
+
+    return { file_info => \%file_info, lang_stats => \%lang_stats, ext_count => \%ext_count,
+             total_bytes => $total_bytes, dir_count => $dir_count, file_count => scalar @{$walk->{files}} };
+}
+
+sub generate_markdown {
+    my ($data, $config) = @_;
+    my $out = "# Repository Context Dump\n\n### REPO OVERVIEW\n\n";
+    $out .= "Root: $data->{root}\nDirs: $data->{dir_count}\nFiles (included by filters): $data->{file_count}\n";
+    $out .= "Approx total bytes: $data->{total_bytes}\nApprox tokens (~4 chars/token): " . int($data->{total_bytes}/4) . "\n\n";
+
+    if (@{$data->{key_files}}) {
+        $out .= "Key docs / entrypoints / configs:\n";
+        for my $kf (sort @{$data->{key_files}}) {
+            my $i = $data->{file_info}{$kf};
+            my $tag = $i->{category};
+            $tag .= ", entrypoint" if $i->{is_entry};
+            $tag .= ", config" if $i->{is_config};
+            $out .= "- $kf [$tag]\n";
+        }
+        $out .= "\n";
+    }
+
+    if (%{$data->{ext_count}}) {
+        $out .= "By extension:\n";
+        $out .= "- $_: $data->{ext_count}{$_}\n" for sort { $data->{ext_count}{$b} <=> $data->{ext_count}{$a} } keys %{$data->{ext_count}};
+        $out .= "\n";
+    }
+
+    $out .= "### LANGUAGE OVERVIEW\n\n";
+    for my $lid (sort { $data->{lang_stats}{$b}{bytes} <=> $data->{lang_stats}{$a}{bytes} } keys %{$data->{lang_stats}}) {
+        my $s = $data->{lang_stats}{$lid};
+        $out .= "- $s->{name} ($lid): $s->{count} files, ~" . int($s->{bytes}/4) . " tokens\n";
+        my @roles = map { "$_=$s->{by_role}{$_}" } grep { $s->{by_role}{$_} } qw(source test config docs other);
+        $out .= "  Roles: " . join(', ', @roles) . "\n" if @roles;
+        if (@{$s->{entries}}) { $out .= "  Entry-point files:\n    - $_\n" for @{$s->{entries}}; }
+        if (@{$s->{configs}}) { $out .= "  Config files:\n    - $_\n" for @{$s->{configs}}; }
+        $out .= "\n";
+    }
+
+    $out .= "### REPO TREE\n\n";
+    for my $p (@{$data->{paths}}) {
+        my @parts = split m{/}, $p;
+        $out .= ('  ' x (@parts - 1)) . $parts[-1] . ($data->{is_dir}{$p} ? '/' : '') . "\n";
+    }
+
+    if ($config->{compress}) {
+        $out .= "\n### FILE LIST\n# Compressed mode: metadata only (no contents).\n\n";
+        for my $rel (@{$data->{files}}) {
+            my $i = $data->{file_info}{$rel};
+            $out .= "- $rel [$i->{lang_name}, $i->{category}, $i->{size} bytes, " . ($i->{is_text} ? 'text' : 'binary') . "]\n";
+        }
+    } else {
+        $out .= "\n### FILE CONTENTS\n# Files wrapped in markers and code fences.\n\n";
+        for my $rel (@{$data->{files}}) {
+            my $i = $data->{file_info}{$rel};
+            $out .= "\n=== FILE START: $rel ===\n";
+            $out .= "Size: $i->{size} bytes | Language: $i->{lang_name} | Role: $i->{category}\n";
+
+            if (!$i->{is_text}) { $out .= "[[ BINARY FILE ]]\n=== FILE END: $rel ===\n"; next; }
+            if ($i->{size} > $config->{max_bytes}) { $out .= "[[ FILE TOO LARGE ]]\n=== FILE END: $rel ===\n"; next; }
+
+            open my $fh, '<', $i->{full} or do { $out .= "[[ ERROR ]]\n=== FILE END: $rel ===\n"; next; };
+            my $fence = $i->{lang_id}; $fence =~ s/\s+/_/g;
+            $out .= "\n```$fence:$rel\n";
+            my $line_num = 0;
+            while (my $l = <$fh>) {
+                $line_num++;
+                if ($config->{max_lines} > 0 && $line_num > $config->{max_lines}) {
+                    $out .= "... [truncated after $config->{max_lines} lines]\n";
+                    last;
+                }
+                $out .= $config->{line_nums} ? sprintf("%5d| %s", $line_num, $l) : $l;
+            }
+            close $fh;
+            $out .= "```\n=== FILE END: $rel ===\n";
+        }
+    }
+    return $out;
+}
+
+sub analyze_repository {
+    my ($params) = @_;
+    $params ||= {};
+
+    my ($root, $cloned) = (undef, 0);
+    if ($params->{git_url}) {
+        my $r = clone_git_repo($params->{git_url});
+        return { success => 0, error => { code => $r->{code} || 'GIT_ERROR', message => $r->{error} } } if $r->{error};
+        $root = $r->{path}; $cloned = 1;
+    } else {
+        $root = $params->{path} || '.';
+        $root = abs_path($root) if -e $root;
+    }
+    return { success => 0, error => { code => 'INVALID_PATH', message => "Path '$root' not found" } } unless $root && -d $root;
+
+    my $config = {
+        max_bytes => $params->{max_file_size} || 300_000,
+        max_lines => $params->{max_lines_per_chunk} // 1200,
+        line_nums => $params->{include_line_numbers} ? 1 : 0,
+        compress => $params->{compress} ? 1 : 0,
+        max_output => $params->{max_total_output_bytes} || 0,
+        only_ext => {},
+    };
+    if (ref $params->{include_extensions} eq 'ARRAY' && @{$params->{include_extensions}}) {
+        $config->{only_ext} = { map { lc($_) => 1 } @{$params->{include_extensions}} };
+    }
+
+    my $ignore_re = build_ignore_list($root, $params->{exclude_patterns});
+    my $walk = walk_repo($root, $config, $ignore_re);
+
+    return { success => 1, metadata => { root_path => $root, total_files => 0, total_dirs => 0 },
+             content => "# No files found.\n", truncated => 0 } unless @{$walk->{files}};
+
+    my $stats = collect_file_info($walk, $root);
+    my @key_files = grep { my $i = $stats->{file_info}{$_}; $i->{category} eq 'docs' || $i->{is_entry} || $i->{is_config} } @{$walk->{files}};
+
+    my $data = { root => $root, %$stats, key_files => \@key_files, paths => $walk->{paths}, is_dir => $walk->{is_dir}, files => $walk->{files} };
+    my $content = generate_markdown($data, $config);
+
+    my $truncated = 0;
+    if ($config->{max_output} > 0 && length($content) > $config->{max_output}) {
+        $content = substr($content, 0, $config->{max_output}) . "\n[[ TRUNCATED ]]\n";
+        $truncated = 1;
+    }
+
+    my %lang_meta = map { $_ => { file_count => $stats->{lang_stats}{$_}{count}, bytes => $stats->{lang_stats}{$_}{bytes}, roles => $stats->{lang_stats}{$_}{by_role} } } keys %{$stats->{lang_stats}};
+
+    return {
+        success => 1,
+        metadata => { root_path => $root, total_files => $stats->{file_count}, total_dirs => $stats->{dir_count},
+                      total_bytes => $stats->{total_bytes}, approx_tokens => int($stats->{total_bytes}/4),
+                      languages => \%lang_meta, key_files => \@key_files, cloned => $cloned ? \1 : \0 },
+        content => $content,
+        truncated => $truncated ? \1 : \0,
+    };
+}
+
+# ============================================================================
+# MAIN PACKAGE
+# ============================================================================
+
+package main;
+
+my $JSON_MODULE;
+sub init_json {
+    for my $mod (qw(JSON::XS JSON::PP JSON)) {
+        eval "require $mod";
+        unless ($@) { $JSON_MODULE = $mod; return 1; }
+    }
+    return 0;
+}
+
+sub decode_json { my ($s) = @_; return $JSON_MODULE ? $JSON_MODULE->new->utf8->decode($s) : _decode($s); }
+sub encode_json { my ($d) = @_; return $JSON_MODULE ? $JSON_MODULE->new->utf8->pretty->canonical->encode($d) : _encode($d); }
+
+sub _decode {
+    my ($s) = @_; $s =~ s/^\s+|\s+$//g;
+    return _parse_val(\$s);
+}
+
+sub _parse_val {
+    my ($r) = @_; $$r =~ s/^\s+//;
+    return _parse_obj($r) if $$r =~ /^\{/;
+    return _parse_arr($r) if $$r =~ /^\[/;
+    return _parse_str($r) if $$r =~ /^"/;
+    if ($$r =~ s/^(-?\d+\.?\d*)//) { return $1 + 0; }
+    if ($$r =~ s/^true//i) { return 1; }
+    if ($$r =~ s/^false//i) { return 0; }
+    if ($$r =~ s/^null//i) { return undef; }
+    die "Invalid JSON\n";
+}
+
+sub _parse_obj {
+    my ($r) = @_; $$r =~ s/^\{\s*//; my %h;
+    while ($$r !~ /^\}/) {
+        my $k = _parse_str($r); $$r =~ s/^\s*:\s*//;
+        $h{$k} = _parse_val($r); $$r =~ s/^\s*,?\s*//;
+    }
+    $$r =~ s/^\}\s*//; return \%h;
+}
+
+sub _parse_arr {
+    my ($r) = @_; $$r =~ s/^\[\s*//; my @a;
+    while ($$r !~ /^\]/) { push @a, _parse_val($r); $$r =~ s/^\s*,?\s*//; }
+    $$r =~ s/^\]\s*//; return \@a;
+}
+
+sub _parse_str {
+    my ($r) = @_; $$r =~ s/^"//; my $s = '';
+    while ($$r !~ /^"/) {
+        if ($$r =~ s/^\\(.)//) {
+            $s .= $1 eq 'n' ? "\n" : $1 eq 'r' ? "\r" : $1 eq 't' ? "\t" : $1;
+        } else { $$r =~ s/^(.)//s; $s .= $1; }
+    }
+    $$r =~ s/^"\s*//; return $s;
+}
+
+sub _encode {
+    my ($v) = @_; return 'null' unless defined $v;
+    return ref $v eq 'HASH' ? '{' . join(',', map { _enc_str($_) . ':' . _encode($v->{$_}) } sort keys %$v) . '}'
+         : ref $v eq 'ARRAY' ? '[' . join(',', map { _encode($_) } @$v) . ']'
+         : ref $v eq 'SCALAR' ? ($$v ? 'true' : 'false')
+         : $v =~ /^-?\d+\.?\d*$/ ? $v : _enc_str($v);
+}
+
+sub _enc_str { my ($s) = @_; $s =~ s/\\/\\\\/g; $s =~ s/"/\\"/g; $s =~ s/\n/\\n/g; $s =~ s/\r/\\r/g; $s =~ s/\t/\\t/g; return "\"$s\""; }
+
+sub validate_input {
+    my ($p) = @_;
+    return { valid => 1, params => {} } unless defined $p;
+    return { valid => 0, error => 'Input must be JSON object' } unless ref $p eq 'HASH';
+    my @e;
+    push @e, "'git_url' invalid" if $p->{git_url} && $p->{git_url} !~ m{^(https?|git|ssh)://|^git@};
+    push @e, "'output_format' must be json or markdown" if $p->{output_format} && $p->{output_format} !~ /^(json|markdown)$/;
+    push @e, "'include_extensions' must be array" if $p->{include_extensions} && ref $p->{include_extensions} ne 'ARRAY';
+    push @e, "'exclude_patterns' must be array" if $p->{exclude_patterns} && ref $p->{exclude_patterns} ne 'ARRAY';
+    for (qw(max_file_size max_lines_per_chunk max_total_output_bytes)) {
+        push @e, "'$_' must be non-negative integer" if defined $p->{$_} && ($p->{$_} !~ /^\d+$/ || $p->{$_} < 0);
+    }
+    return @e ? { valid => 0, error => join('; ', @e) } : { valid => 1, params => $p };
+}
+
+sub get_schema {
+    return {
+        name => 'dump_repo_context', version => $VERSION,
+        description => 'Analyzes and dumps repository content into structured LLM-friendly format',
+        input_schema => {
+            type => 'object',
+            properties => {
+                path => { type => 'string', description => 'Local directory path' },
+                git_url => { type => 'string', description => 'Git repository URL to clone' },
+                compress => { type => 'boolean', default => \0, description => 'Output structure only, no file contents' },
+                output_format => { type => 'string', enum => ['json', 'markdown'], default => 'markdown' },
+                include_extensions => { type => 'array', items => { type => 'string' }, description => 'Only include these extensions' },
+                exclude_patterns => { type => 'array', items => { type => 'string' }, description => 'Glob patterns to exclude' },
+                max_file_size => { type => 'integer', default => 300000, description => 'Max file size in bytes' },
+                max_lines_per_chunk => { type => 'integer', default => 1200, description => 'Max lines per file (0=unlimited)' },
+                include_line_numbers => { type => 'boolean', default => \0, description => 'Add line numbers' },
+                max_total_output_bytes => { type => 'integer', default => 0, description => 'Truncate output (0=unlimited)' },
+            },
+        },
+    };
+}
+
+sub print_help {
+    print <<"HELP";
+pcontext-mcp-standalone v$VERSION - Self-contained MCP Tool for Repository Context
+
+USAGE:
+    pcontext-mcp-standalone [OPTIONS]
+    echo '{"path": "."}' | pcontext-mcp-standalone
+
+OPTIONS:
+    --input JSON     JSON input as command-line argument
+    --schema         Print tool schema and exit
+    --help, -h       Show this help
+
+INPUT PARAMETERS (JSON):
+    path                    Local directory (default: ".")
+    git_url                 Git repository URL to clone
+    compress                true = structure only, no contents (default: false)
+    output_format           "markdown" or "json" (default: "markdown")
+    include_extensions      Array of extensions ["py", "ts"]
+    exclude_patterns        Array of globs ["*.log", "tmp/*"]
+    max_file_size           Max bytes per file (default: 300000)
+    max_lines_per_chunk     Lines per file, 0=unlimited (default: 1200)
+    include_line_numbers    true = add line numbers (default: false)
+    max_total_output_bytes  Truncate output, 0=unlimited (default: 0)
+
+EXAMPLES:
+    # Analyze current directory
+    echo '{}' | ./pcontext-mcp-standalone
+
+    # Quick overview (no file contents)
+    ./pcontext-mcp-standalone --input '{"compress": true}'
+
+    # Clone and analyze remote repo
+    ./pcontext-mcp-standalone --input '{"git_url": "https://github.com/user/repo.git"}'
+
+    # Filter by extensions
+    ./pcontext-mcp-standalone --input '{"include_extensions": ["py", "ts"]}'
+
+OUTPUT:
+    JSON object with: success, metadata, content, truncated
+
+HELP
+    exit 0;
+}
+
+sub main {
+    init_json();
+
+    my ($input_json, $show_schema, $show_help);
+    GetOptions('input=s' => \$input_json, 'schema' => \$show_schema, 'help|h' => \$show_help)
+        or die "Invalid arguments\n";
+
+    print_help() if $show_help;
+    if ($show_schema) { print encode_json(get_schema()) . "\n"; exit 0; }
+
+    my $raw = defined $input_json ? $input_json : !-t STDIN ? do { local $/; <STDIN> } : '{}';
+
+    my $params = eval { decode_json($raw) };
+    if ($@) { print encode_json({ success => \0, error => { code => 'INVALID_JSON', message => "Parse error: $@" } }) . "\n"; exit 1; }
+
+    my $v = validate_input($params);
+    unless ($v->{valid}) { print encode_json({ success => \0, error => { code => 'VALIDATION_ERROR', message => $v->{error} } }) . "\n"; exit 1; }
+
+    my $result = PContext::analyze_repository($params);
+    print encode_json($result) . "\n";
+    exit($result->{success} ? 0 : 1);
+}
+
+main();
