@@ -46,6 +46,9 @@ test:
 	@echo "=== Running pcontext-mcp.t ==="
 	perl pcontext-mcp.t
 	@echo ""
+	@echo "=== Running pcontext-standalone.t ==="
+	perl pcontext-standalone.t
+	@echo ""
 	@echo "=== All tests passed ==="
 
 install: test
