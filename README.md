@@ -218,31 +218,73 @@ cp pcontext-mcp-standalone ~/.local/bin/
 chmod +x ~/.local/bin/pcontext-mcp-standalone
 ```
 
-### Usage from any directory
+### Standalone Mode (Default)
+
+By default, `pcontext-mcp-standalone` runs as a regular CLI tool that outputs Markdown to stdout. This is perfect for quick repository analysis or integration with shell scripts and LLM workflows.
 
 ```bash
 # Get help
 pcontext-mcp-standalone --help
 
-# Analyze current directory
-echo '{}' | pcontext-mcp-standalone
+# Analyze current directory (default behavior)
+pcontext-mcp-standalone
 
-# Analyze a specific repo with compression
-pcontext-mcp-standalone --input '{"path": "/path/to/repo", "compress": true}'
+# Analyze a specific directory
+pcontext-mcp-standalone /path/to/repo
+
+# Quick overview without file contents
+pcontext-mcp-standalone --compress .
 
 # Clone and analyze a remote repository
-pcontext-mcp-standalone --input '{"git_url": "https://github.com/user/repo.git"}'
+pcontext-mcp-standalone --git_url https://github.com/user/repo.git
+
+# Save to file
+pcontext-mcp-standalone /path/to/repo > repo_context.md
+```
+
+**Key features of standalone mode:**
+- No JSON wrapping - outputs clean Markdown directly
+- Status messages go to stderr, content to stdout (perfect for piping)
+- Simple command-line interface - no JSON knowledge required
+- Works from any directory on any repository
+
+### MCP Mode (JSON Input/Output)
+
+For programmatic use or LLM tool integration, use MCP mode by providing JSON input:
+
+```bash
+# Via stdin
+echo '{"path": ".", "compress": true}' | pcontext-mcp-standalone
+
+# Via --input flag
+pcontext-mcp-standalone --input '{"path": "/path/to/repo", "compress": true}'
+
+# Get tool schema
+pcontext-mcp-standalone --schema
 ```
 
 ### Using with LLMs (e.g., Claude)
 
-Point the LLM to the standalone tool and it can:
+**For standalone CLI usage (recommended):**
+
+Point the LLM to the standalone tool for direct repository analysis:
+
+```
+Give this tool to the LLM: /path/to/pcontext-mcp-standalone
+
+Example prompts:
+- "Use pcontext-mcp-standalone to analyze the current directory"
+- "Run pcontext-mcp-standalone --compress . to get a quick overview"
+- "Use pcontext-mcp-standalone /path/to/repo > context.md"
+```
+
+The tool will automatically provide repository context in an LLM-friendly format.
+
+**For MCP tool integration:**
+
 1. Run `pcontext-mcp-standalone --help` to learn the interface
 2. Run `pcontext-mcp-standalone --schema` to get the full JSON schema
 3. Call the tool with appropriate JSON input to analyze any repository
-
-Example prompt:
-> "Use `/path/to/pcontext-mcp-standalone --help` to learn about the repo context tool, then use it to analyze the current project."
 
 The standalone version includes all functionality of the modular version and requires only Perl 5.10+ with core modules.
 
