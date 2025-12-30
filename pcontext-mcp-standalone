@@ -5,7 +5,12 @@
 # This is a standalone version with all dependencies bundled.
 # Copy this single file anywhere and it just works.
 #
-# Usage:
+# STANDALONE MODE (default):
+#   ./pcontext-mcp-standalone              # Analyze current directory
+#   ./pcontext-mcp-standalone /path/to/dir # Analyze specific directory
+#   ./pcontext-mcp-standalone --compress . # Quick overview
+#
+# MCP MODE (JSON input/output):
 #   echo '{"path": "."}' | ./pcontext-mcp-standalone
 #   ./pcontext-mcp-standalone --input '{"compress": true}'
 #   ./pcontext-mcp-standalone --schema
@@ -588,15 +593,26 @@ sub print_help {
 pcontext-mcp-standalone v$VERSION - Self-contained MCP Tool for Repository Context
 
 USAGE:
-    pcontext-mcp-standalone [OPTIONS]
+    pcontext-mcp-standalone [OPTIONS] [PATH]
     echo '{"path": "."}' | pcontext-mcp-standalone
 
+STANDALONE MODE (DEFAULT):
+    pcontext-mcp-standalone              # Analyze current directory
+    pcontext-mcp-standalone /path/to/dir # Analyze specific directory
+    pcontext-mcp-standalone --compress . # Quick overview of current directory
+
 OPTIONS:
-    --input JSON     JSON input as command-line argument
+    --input JSON     JSON input as command-line argument (enables MCP mode)
+    --compress       Output structure only, no file contents (standalone mode)
+    --git_url URL    Clone and analyze a Git repository (standalone mode)
     --schema         Print tool schema and exit
     --help, -h       Show this help
 
-INPUT PARAMETERS (JSON):
+MCP MODE (JSON INPUT):
+    When --input is provided or JSON is piped via stdin, the tool operates in MCP mode
+    and outputs JSON. Otherwise, it runs in standalone mode and outputs markdown.
+
+INPUT PARAMETERS (JSON for MCP mode):
     path                    Local directory (default: ".")
     git_url                 Git repository URL to clone
     compress                true = structure only, no contents (default: false)
@@ -609,20 +625,30 @@ INPUT PARAMETERS (JSON):
     max_total_output_bytes  Truncate output, 0=unlimited (default: 0)
 
 EXAMPLES:
-    # Analyze current directory
-    echo '{}' | ./pcontext-mcp-standalone
+    # Standalone mode - analyze current directory
+    pcontext-mcp-standalone
 
-    # Quick overview (no file contents)
-    ./pcontext-mcp-standalone --input '{"compress": true}'
+    # Standalone mode - analyze specific directory
+    pcontext-mcp-standalone /path/to/repo
 
-    # Clone and analyze remote repo
-    ./pcontext-mcp-standalone --input '{"git_url": "https://github.com/user/repo.git"}'
+    # Standalone mode - quick overview
+    pcontext-mcp-standalone --compress .
 
-    # Filter by extensions
-    ./pcontext-mcp-standalone --input '{"include_extensions": ["py", "ts"]}'
+    # Standalone mode - clone and analyze
+    pcontext-mcp-standalone --git_url https://github.com/user/repo.git
+
+    # MCP mode - JSON input via flag
+    pcontext-mcp-standalone --input '{"compress": true}'
+
+    # MCP mode - JSON input via stdin
+    echo '{"path": "/path/to/repo"}' | pcontext-mcp-standalone
+
+    # MCP mode - filter by extensions
+    pcontext-mcp-standalone --input '{"include_extensions": ["py", "ts"]}'
 
 OUTPUT:
-    JSON object with: success, metadata, content, truncated
+    Standalone mode: Markdown text to stdout
+    MCP mode: JSON object with success, metadata, content, truncated
 
 HELP
     exit 0;
@@ -631,24 +657,102 @@ HELP
 sub main {
     init_json();
 
-    my ($input_json, $show_schema, $show_help);
-    GetOptions('input=s' => \$input_json, 'schema' => \$show_schema, 'help|h' => \$show_help)
-        or die "Invalid arguments\n";
+    my ($input_json, $show_schema, $show_help, $compress, $git_url);
+    GetOptions(
+        'input=s'   => \$input_json,
+        'schema'    => \$show_schema,
+        'help|h'    => \$show_help,
+        'compress'  => \$compress,
+        'git_url=s' => \$git_url,
+    ) or die "Invalid arguments\n";
 
     print_help() if $show_help;
     if ($show_schema) { print encode_json(get_schema()) . "\n"; exit 0; }
 
-    my $raw = defined $input_json ? $input_json : !-t STDIN ? do { local $/; <STDIN> } : '{}';
+    # Determine mode: MCP (JSON) or Standalone (CLI)
+    my $mcp_mode = 0;
+    my $params;
 
-    my $params = eval { decode_json($raw) };
-    if ($@) { print encode_json({ success => \0, error => { code => 'INVALID_JSON', message => "Parse error: $@" } }) . "\n"; exit 1; }
+    if (defined $input_json) {
+        # MCP mode via --input flag
+        $mcp_mode = 1;
+        $params = eval { decode_json($input_json) };
+        if ($@) {
+            print encode_json({ success => \0, error => { code => 'INVALID_JSON', message => "Parse error: $@" } }) . "\n";
+            exit 1;
+        }
+    }
+    elsif (!-t STDIN) {
+        # MCP mode via stdin (piped JSON)
+        $mcp_mode = 1;
+        my $raw = do { local $/; <STDIN> };
+        $params = eval { decode_json($raw) };
+        if ($@) {
+            print encode_json({ success => \0, error => { code => 'INVALID_JSON', message => "Parse error: $@" } }) . "\n";
+            exit 1;
+        }
+    }
+    else {
+        # Standalone mode - build params from command-line args
+        $mcp_mode = 0;
+        $params = {};
+        
+        # Get path argument (defaults to '.')
+        my $path = shift @ARGV // '.';
+        $params->{path} = $path;
+        
+        # Apply command-line options
+        $params->{compress} = 1 if $compress;
+        $params->{git_url} = $git_url if defined $git_url;
+    }
 
+    # Validate input
     my $v = validate_input($params);
-    unless ($v->{valid}) { print encode_json({ success => \0, error => { code => 'VALIDATION_ERROR', message => $v->{error} } }) . "\n"; exit 1; }
+    unless ($v->{valid}) {
+        if ($mcp_mode) {
+            print encode_json({ success => \0, error => { code => 'VALIDATION_ERROR', message => $v->{error} } }) . "\n";
+            exit 1;
+        } else {
+            die "Error: $v->{error}\n";
+        }
+    }
 
+    # Print status message to stderr in standalone mode
+    if (!$mcp_mode) {
+        if ($params->{git_url}) {
+            print STDERR "# Cloning $params->{git_url}...\n";
+        } else {
+            my $target = $params->{path} || '.';
+            print STDERR "# Analyzing $target...\n";
+        }
+    }
+
+    # Execute analysis
     my $result = PContext::analyze_repository($params);
-    print encode_json($result) . "\n";
-    exit($result->{success} ? 0 : 1);
+
+    # Output result
+    if ($mcp_mode) {
+        # MCP mode: JSON output
+        print encode_json($result) . "\n";
+        exit($result->{success} ? 0 : 1);
+    } else {
+        # Standalone mode: Markdown output
+        if (!$result->{success}) {
+            my $error = $result->{error} || {};
+            my $msg = $error->{message} || 'Unknown error';
+            die "Error: $msg\n";
+        }
+        
+        # Output the content
+        print $result->{content};
+        
+        # Print summary to stderr
+        my $meta = $result->{metadata} || {};
+        print STDERR "\n# Analysis complete: $meta->{total_files} files, ";
+        print STDERR "$meta->{total_dirs} dirs, ~$meta->{approx_tokens} tokens\n";
+        
+        exit 0;
+    }
 }
 
 main();
