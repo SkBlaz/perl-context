@@ -748,8 +748,8 @@ sub main {
         
         # Print summary to stderr
         my $meta = $result->{metadata} || {};
-        print STDERR "\n# Analysis complete: $meta->{total_files} files, ";
-        print STDERR "$meta->{total_dirs} dirs, ~$meta->{approx_tokens} tokens\n";
+        print STDERR "\n# Analysis complete: " . ($meta->{total_files} || 0) . " files, ";
+        print STDERR ($meta->{total_dirs} || 0) . " dirs, ~" . ($meta->{approx_tokens} || 0) . " tokens\n";
         
         exit 0;
     }
